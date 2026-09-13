@@ -807,13 +807,19 @@ void aglSwapBuffers(void* ctx) {
   }
   static unsigned swaps;
   static Uint32 traced_at;
+  static Uint32 last_swap;
+  static Uint32 longest;  // between two swaps since the last trace, in ms
   int traced = ++swaps == 1 || swaps % kFramesPerTrace == 0;
   if (traced) {
     dump_frame(c, swaps);
   }
   SDL_GL_SwapWindow(c->window);
+  Uint32 now = SDL_GetTicks();
+  if (last_swap && now - last_swap > longest) {
+    longest = now - last_swap;
+  }
+  last_swap = now;
   if (traced) {
-    Uint32 now = SDL_GetTicks();
     if (swaps == 1) {
       cf_trace("aglSwapBuffers: frame 1");
     } else {
@@ -821,10 +827,12 @@ void aglSwapBuffers(void* ctx) {
       unsigned frames =
           swaps == kFramesPerTrace ? kFramesPerTrace - 1 : kFramesPerTrace;
       Uint32 elapsed = now - traced_at;
-      cf_trace("aglSwapBuffers: frame %u, %.1f frames a second", swaps,
-               frames * 1000.0 / (elapsed ? elapsed : 1));
+      cf_trace("aglSwapBuffers: frame %u, %.1f frames a second, the longest "
+               "%u ms", swaps, frames * 1000.0 / (elapsed ? elapsed : 1),
+               longest);
     }
     traced_at = now;
+    longest = 0;
   }
 }
 

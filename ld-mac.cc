@@ -1123,6 +1123,79 @@ extern "C" {
 }
 
 #ifndef __x86_64__
+// /proc/self/maps, read at the crash into a buffer set aside for it. Code a
+// library generated at run time has no symbol for dladdr, and the end of a
+// block an overrun ran off is only visible as the edge of a mapping.
+static char g_crash_maps[1 << 17];
+
+static bool findMapping(uintptr_t addr, bool code_only, const char** line,
+                        int* length) {
+  for (const char* p = g_crash_maps; *p;) {
+    const char* end = strchr(p, '\n');
+    if (!end) {
+      end = p + strlen(p);
+    }
+    unsigned long lo, hi;
+    char perms[5];
+    if (sscanf(p, "%lx-%lx %4s", &lo, &hi, perms) == 3 && addr >= lo &&
+        addr < hi && (!code_only || perms[2] == 'x')) {
+      *line = p;
+      *length = (int)(end - p);
+      return true;
+    }
+    p = *end ? end + 1 : end;
+  }
+  return false;
+}
+
+// Says which mappings hold the faulting code and the address it touched,
+// and lists code addresses left on the stack, the likely callers when the
+// code keeps no frame pointer.
+static void reportMappings(uintptr_t eip, uintptr_t fault, uintptr_t esp) {
+  int fd = open("/proc/self/maps", O_RDONLY);
+  if (fd < 0) {
+    return;
+  }
+  size_t n = 0;
+  ssize_t got;
+  while (n + 1 < sizeof(g_crash_maps) &&
+         (got = read(fd, g_crash_maps + n,
+                     sizeof(g_crash_maps) - 1 - n)) > 0) {
+    n += got;
+  }
+  close(fd);
+  g_crash_maps[n] = '\0';
+  const char* line;
+  int length;
+  if (findMapping(eip, false, &line, &length)) {
+    fprintf(stderr, "eip is in %.*s\n", length, line);
+  } else {
+    fprintf(stderr, "eip is in no mapping\n");
+  }
+  if (findMapping(fault, false, &line, &length)) {
+    fprintf(stderr, "the fault address is in %.*s\n", length, line);
+  } else if (fault && findMapping(fault - 1, false, &line, &length)) {
+    fprintf(stderr, "the fault address is just past %.*s\n", length, line);
+  }
+  unsigned long stack_lo, stack_hi;
+  if (!findMapping(esp, false, &line, &length) ||
+      sscanf(line, "%lx-%lx", &stack_lo, &stack_hi) != 2) {
+    return;
+  }
+  uintptr_t stack_end = esp + 4096 < stack_hi ? esp + 4096 : stack_hi;
+  fprintf(stderr, "code addresses on the stack:\n");
+  int shown = 0;
+  for (uintptr_t p = esp; p + sizeof(uintptr_t) <= stack_end && shown < 16;
+       p += sizeof(uintptr_t)) {
+    uintptr_t value = *(uintptr_t*)p;
+    if (value >= 0x1000 && findMapping(value, true, &line, &length)) {
+      fprintf(stderr, "  [esp+%#lx] %p in %.*s\n", (unsigned long)(p - esp),
+              (void*)value, length, line);
+      shown++;
+    }
+  }
+}
+
 // A fault in the Mac image. Names the import when the address is one of the
 // undefined-symbol slots, then walks the image's frame-pointer chain, which
 // glibc's backtrace() cannot see.
@@ -1180,6 +1253,7 @@ static void reportClassicFault(int signum, siginfo_t* siginfo,
     }
     ebp = frame[0];
   }
+  reportMappings(eip, fault, esp);
   _exit(128 + signum);
 }
 #endif

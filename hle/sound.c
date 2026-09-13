@@ -346,24 +346,87 @@ static void free_disposed(void) {
   }
 }
 
+// What the mixer did, traced every ten seconds. A callback that comes late
+// means the device ran dry and the sound broke up; clipped samples are
+// voices summing past full scale.
+static struct {
+  uint64_t window_start;
+  uint64_t last_start;
+  uint64_t longest_gap;
+  uint64_t longest_mix;
+  unsigned callbacks;
+  unsigned late;
+  unsigned clipped;
+  int most_voices;
+} stats;
+
+static void count_mix(uint64_t start, int frames, unsigned clipped,
+                      int voices) {
+  uint64_t end = now_ns();
+  uint64_t period = (uint64_t)frames * 1000000000u / output_rate;
+  if (!stats.last_start) {
+    stats.window_start = start;
+  } else {
+    uint64_t gap = start - stats.last_start;
+    if (gap > stats.longest_gap) {
+      stats.longest_gap = gap;
+    }
+    if (gap > period + period / 2) {
+      stats.late++;
+    }
+  }
+  stats.last_start = start;
+  stats.callbacks++;
+  if (end - start > stats.longest_mix) {
+    stats.longest_mix = end - start;
+  }
+  stats.clipped += clipped;
+  if (voices > stats.most_voices) {
+    stats.most_voices = voices;
+  }
+  if (start - stats.window_start >= 10000000000u) {
+    cf_trace("sound: %u callbacks in %.1f s, %u late (the longest gap %.1f "
+             "ms), the longest mix %.2f ms, %u samples clipped, at most %d "
+             "voices", stats.callbacks, (start - stats.window_start) / 1e9,
+             stats.late, stats.longest_gap / 1e6, stats.longest_mix / 1e6,
+             stats.clipped, stats.most_voices);
+    memset(&stats, 0, sizeof(stats));
+    stats.window_start = start;
+    stats.last_start = start;
+  }
+}
+
 static void mix(void* userdata, Uint8* stream, int length) {
+  uint64_t start = now_ns();
   int16_t* out = (int16_t*)stream;
   int frames = length / 4;
+  unsigned clipped = 0;
+  int voices = 0;
   mixing = 1;
   for (int done = 0; done < frames;) {
     int n = frames - done < sums_capacity ? frames - done : sums_capacity;
     memset(sums, 0, sizeof(int32_t) * 2 * n);
+    int playing = 0;
     for (channel* c = channels; c; c = c->next) {
+      playing += c->voice.playing;
       mix_channel(c, n);
+    }
+    if (playing > voices) {
+      voices = playing;
     }
     for (int i = 0; i < 2 * n; i++) {
       int32_t sum = sums[i];
-      out[2 * done + i] = sum > 32767 ? 32767 : sum < -32768 ? -32768 : sum;
+      if (sum > 32767 || sum < -32768) {
+        clipped++;
+        sum = sum > 32767 ? 32767 : -32768;
+      }
+      out[2 * done + i] = sum;
     }
     done += n;
   }
   mixing = 0;
   free_disposed();
+  count_mix(start, frames, clipped, voices);
 }
 
 // Without a device, runs the mixer in time into a buffer no one hears.
