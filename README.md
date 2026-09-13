@@ -15,10 +15,12 @@ system's OpenGL. No part of the game is included; you need your own copy.
 
 Work in progress. Every one of the game's 724 imports binds. It runs its
 startup checks (CPU, memory, QuickTime and OpenGL versions, an OpenGL context
-probe, video memory, disk space), finds its disc, shows its EULA, which is
-answered for the user (see Configuration), and asks for its product key.
-Nothing has been rendered yet: the game's own window, its main loop and
-sound come next.
+probe, video memory, disk space), finds its disc, shows its EULA and asks for
+its product key, which are answered without being shown (see
+Configuration), loads its maps and shaders, and draws its main menu: 30
+frames a second in an 800x600 window on a Pentium 4 with a GeForce 7600 GS
+and NVIDIA's 304 driver. Playing has not been tried yet. Sound, the intro
+movies and pbuffers are not implemented.
 
 An import with no implementation is bound to a guard page, so its first use
 stops the program with its name, its caller and the registers.
@@ -66,6 +68,12 @@ executables at 0x400000, which is inside the game's image.
   accepts with its preferences.
 - `HLE_TRACE=1` logs lookups and decisions, and `LD_MAC_LIST_UNDEFINED=1`
   lists the imports with no implementation.
+- `LD_MAC_TRACE_IMPORTS=1` logs each implemented import the first time the
+  game calls it, with the address of the call, and `LD_MAC_TRACE_IMPORTS=all`
+  logs every call.
+- `HLE_FRAME_DUMP=<directory>` saves the first frame the game draws, and
+  every 600th after it, to `frame-<n>.ppm` in that directory. With
+  `HLE_TRACE=1`, each of those frames also logs the frame rate.
 
 ## CoreFoundation
 
@@ -83,11 +91,16 @@ bundles and localized strings, preferences, UUIDs and character sets.
 
 ## Carbon
 
-- The File Manager puts the Mac's one volume at /. FSRefs, FSSpecs with
+- The File Manager puts the Mac's startup volume at / and, when
+  `HLE_CD_PATH` is set, the disc as a second volume. FSRefs, FSSpecs with
   classic partial pathnames, catalog information, directory iteration, forks
   and the parameter-block calls the game uses are implemented. Carbon keeps
   68K structure alignment on Intel; `hle/carbon.h` asserts it against offsets
   read from the game's code.
+- Paths the game opens through the C library are read the way a Mac reads
+  them: without regard to case, since the game opens `shaders/vsh/...` where
+  the folder is `Shaders`, and with `/Volumes/<disc name>` as the disc's
+  directory and `/Volumes/Macintosh HD` as /.
 - Folders a Mac keeps in the home, such as Preferences and Application
   Support, are under `~/.local/share/halo-mac-loader/home`. System folders are
   under `~/.local/share/halo-mac-loader/root`.
@@ -111,6 +124,15 @@ bundles and localized strings, preferences, UUIDs and character sets.
   driver's list overruns, so it sees only the extensions whose names its
   executable contains, plus `GL_EXT_texture_rectangle` where the driver has
   the ARB extension of the same enumerants.
+- Apple's ARB program assembler accepts an `ALIAS` of a binding, as in
+  `ALIAS oPos = result.position;`, and all 90 of the game's vertex programs
+  use one. The ARB grammar aliases only declared variables, so NVIDIA's
+  driver refuses those programs. As each program is loaded, such an `ALIAS`
+  becomes the declaration it stands for, `OUTPUT oPos = result.position;`
+  (`ATTRIB` for a vertex binding). A program the driver still refuses is
+  reported on stderr with the driver's message.
+  `make tests/arb_test && tests/arb_test GameData/Shaders/vsh/*.vsh` checks
+  the rewrite, with the game's own programs when they are named.
 - Displays, their modes and the main GDevice describe SDL's display 0. A mode
   switch resizes the game's window, and a window covering a captured display
   goes full screen unless `HLE_WINDOWED` is set. Gamma tables are recorded,
