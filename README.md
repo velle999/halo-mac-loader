@@ -1,4 +1,57 @@
-# Maloader [![Build Status](https://travis-ci.org/shinh/maloader.svg)](https://travis-ci.org/shinh/maloader)
+# halo-mac-loader
+
+A fork of [maloader](https://github.com/shinh/maloader) aimed at one program:
+the Intel (i386) build of *Halo: Combat Evolved* for Mac OS X (Halo Universal
+2.0, Westlake Interactive and MacSoft, 2006), running natively on 32-bit x86
+Linux with its own OpenGL renderer.
+
+The loader maps the Mac executable into memory, binds its imports and starts
+it. Where Mac OS X would supply CoreFoundation, Carbon, AGL or IOKit, this
+project supplies the calls the game makes. No part of the game is included;
+you need your own copy.
+
+## Status
+
+Work in progress. The executable loads, its imports bind, and its C++ static
+initializers run. Imports with no implementation yet are bound to guard pages,
+so the first one the game uses stops it with its name:
+
+    UNIMPLEMENTED: CFLocaleCopyCurrent called from 0x29e6a7
+
+CoreFoundation is being written now; Carbon, AGL and OpenGL, input and audio
+follow.
+
+## Requirements
+
+- 32-bit x86 Linux with glibc. The game's i386 code needs SSE2.
+- `vm.mmap_min_addr` of 4096 or lower. Mac OS X i386 executables are not
+  position-independent, and their `__TEXT` segment starts at 0x1000:
+
+      sudo sysctl -w vm.mmap_min_addr=4096
+
+## Build and run
+
+    make ld-mac libmac.so
+    cd /path/to/Halo.app/Contents/MacOS
+    /path/to/halo-mac-loader/ld-mac ./Halo
+
+`ld-mac` is linked `-no-pie`. A 32-bit kernel loads position-independent
+executables at 0x400000, which is inside the game's image.
+
+## Changes from maloader
+
+- Pre-10.5 i386 images: `__IMPORT,__jump_table` stubs, external relocations,
+  LOCAL and ABSOLUTE indirect symbols, and a Darwin initial stack with `envp`
+  and `apple[]`.
+- `libmac` additions for 10.4-era executables: `__sF`, keymgr, the `errno`
+  variable, `bootstrap_port`, a monotonic `mach_absolute_time`.
+- An unimplemented import stops the program with its name, its caller, the
+  registers and the frame-pointer chain.
+
+---
+
+## maloader (upstream README)
+
 This is a userland Mach-O loader for linux.
 
 ## Installation
