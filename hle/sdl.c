@@ -380,6 +380,7 @@ static void post_wheel(const SDL_MouseWheelEvent* e) {
 }
 
 static void post_quit(void) {
+  fprintf(stderr, "hle: SDL asked to quit; sending the game Quit\n");
   EventRef event = hle_event_new(kEventClassCommand, kEventCommandProcess);
   HICommandExtended command;
   memset(&command, 0, sizeof(command));
@@ -424,6 +425,8 @@ static void pump(double max_wait) {
                (SDL_GetWindowFlags(game_window) & SDL_WINDOW_INPUT_FOCUS);
     if (want != (int)SDL_GetRelativeMouseMode()) {
       SDL_SetRelativeMouseMode(want ? SDL_TRUE : SDL_FALSE);
+      cf_trace("the pointer is %s",
+               want ? "held in relative mode" : "released");
     }
   }
   SDL_Event e;

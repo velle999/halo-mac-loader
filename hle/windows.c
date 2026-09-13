@@ -210,6 +210,10 @@ int CreateNewWindow(UInt32 window_class, UInt32 attributes,
     return paramErr;
   }
   *out = new_window(sizeof(hle_window), window_class, attributes, bounds);
+  cf_trace("CreateNewWindow(class %u, attributes %#x, %d,%d %dx%d) = %p",
+           (unsigned)window_class, (unsigned)attributes, bounds->left,
+           bounds->top, bounds->right - bounds->left,
+           bounds->bottom - bounds->top, (void*)*out);
   return noErr;
 }
 

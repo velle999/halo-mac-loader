@@ -109,6 +109,7 @@ WRAP(setsockopt)
 
 WRAP(glGetString)
 WRAP(glProgramStringARB)
+WRAP(exit)
 
 RENAME(realpath$DARWIN_EXTSN, realpath)
 

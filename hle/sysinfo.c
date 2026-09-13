@@ -634,3 +634,10 @@ void ReadLocation(MachineLocation* location) {
   location->gmt_delta = (int32_t)(local.tm_gmtoff & 0x00ffffff) |
                         (local.tm_isdst > 0 ? (int32_t)0x80000000 : 0);
 }
+
+// The game's exit, through rename.tab, saying where it was called from.
+__attribute__((noreturn)) void __darwin_exit(int status) {
+  fprintf(stderr, "hle: the game called exit(%d) from %p\n", status,
+          __builtin_return_address(0));
+  exit(status);
+}

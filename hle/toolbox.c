@@ -331,6 +331,8 @@ int GetProcessInformation(const ProcessSerialNumber* psn,
 }
 
 void ExitToShell(void) {
+  fprintf(stderr, "hle: the game called ExitToShell from %p\n",
+          __builtin_return_address(0));
   exit(0);
 }
 

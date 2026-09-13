@@ -674,6 +674,7 @@ void RunApplicationEventLoop(void) {
 }
 
 void QuitApplicationEventLoop(void) {
+  cf_trace("QuitApplicationEventLoop from %p", __builtin_return_address(0));
   if (application_loops > application_quit) {
     application_quit = application_loops;
   }
