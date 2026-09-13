@@ -730,10 +730,101 @@ Boolean aglUpdateContext(void* ctx) {
   return context_of(ctx) != NULL;
 }
 
+enum {
+  GL_BACK = 0x0405,
+  GL_READ_BUFFER = 0x0C02,
+  GL_PACK_ALIGNMENT = 0x0D05,
+  GL_UNSIGNED_BYTE = 0x1401,
+  GL_RGB = 0x1907,
+  kFramesPerTrace = 600,
+};
+
+// HLE_FRAME_DUMP=<directory> saves each frame aglSwapBuffers traces, as the
+// game drew it, to frame-<n>.ppm there.
+static void dump_frame(hle_gl_context* c, unsigned frame) {
+  static const char* directory;
+  static int looked;
+  if (!looked) {
+    looked = 1;
+    directory = getenv("HLE_FRAME_DUMP");
+  }
+  if (!directory || !*directory || c != current) {
+    return;
+  }
+  void (*get_integer)(uint32_t, int32_t*) =
+      dlsym(RTLD_DEFAULT, "glGetIntegerv");
+  void (*read_buffer)(uint32_t) = dlsym(RTLD_DEFAULT, "glReadBuffer");
+  void (*pixel_store)(uint32_t, int32_t) =
+      dlsym(RTLD_DEFAULT, "glPixelStorei");
+  void (*read_pixels)(int32_t, int32_t, int32_t, int32_t, uint32_t,
+                      uint32_t, void*) = dlsym(RTLD_DEFAULT, "glReadPixels");
+  int width = 0;
+  int height = 0;
+  SDL_GL_GetDrawableSize(c->window, &width, &height);
+  unsigned char* pixels =
+      width > 0 && height > 0 ? malloc((size_t)width * 3 * height) : NULL;
+  if (!get_integer || !read_buffer || !pixel_store || !read_pixels ||
+      !pixels) {
+    free(pixels);
+    return;
+  }
+  int32_t buffer = GL_BACK;
+  int32_t alignment = 4;
+  get_integer(GL_READ_BUFFER, &buffer);
+  get_integer(GL_PACK_ALIGNMENT, &alignment);
+  read_buffer(GL_BACK);
+  pixel_store(GL_PACK_ALIGNMENT, 1);
+  read_pixels(0, 0, width, height, GL_RGB, GL_UNSIGNED_BYTE, pixels);
+  pixel_store(GL_PACK_ALIGNMENT, alignment);
+  read_buffer(buffer);
+
+  char path[4096];
+  snprintf(path, sizeof(path), "%s/frame-%06u.ppm", directory, frame);
+  FILE* f = fopen(path, "wb");
+  if (f) {
+    // OpenGL's rows run bottom to top.
+    size_t row = (size_t)width * 3;
+    fprintf(f, "P6\n%d %d\n255\n", width, height);
+    for (int y = height - 1; y >= 0; y--) {
+      fwrite(pixels + row * y, 1, row, f);
+    }
+    fclose(f);
+    cf_trace("aglSwapBuffers: frame %u saved to %s", frame, path);
+  } else {
+    fprintf(stderr, "hle: HLE_FRAME_DUMP: cannot write %s: %m\n", path);
+  }
+  free(pixels);
+}
+
 void aglSwapBuffers(void* ctx) {
   hle_gl_context* c = context_of(ctx);
-  if (c && c->window != c->format->probe) {
-    SDL_GL_SwapWindow(c->window);
+  if (!c) {
+    return;
+  }
+  if (c->window == c->format->probe) {
+    cf_warn_once("aglSwapBuffers on a context with no drawable");
+    return;
+  }
+  static unsigned swaps;
+  static Uint32 traced_at;
+  int traced = ++swaps == 1 || swaps % kFramesPerTrace == 0;
+  if (traced) {
+    dump_frame(c, swaps);
+  }
+  SDL_GL_SwapWindow(c->window);
+  if (traced) {
+    Uint32 now = SDL_GetTicks();
+    if (swaps == 1) {
+      cf_trace("aglSwapBuffers: frame 1");
+    } else {
+      // The frames since the last trace, over the time they took.
+      unsigned frames =
+          swaps == kFramesPerTrace ? kFramesPerTrace - 1 : kFramesPerTrace;
+      Uint32 elapsed = now - traced_at;
+      cf_trace("aglSwapBuffers: frame %u, %.1f frames a second", swaps,
+               frames * 1000.0 / (elapsed ? elapsed : 1));
+    }
+    traced_at = now;
   }
 }
 
