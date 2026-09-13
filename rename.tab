@@ -102,6 +102,8 @@ WRAP(send)
 WRAP(sendto)
 WRAP(setsockopt)
 
+WRAP(glGetString)
+
 RENAME(realpath$DARWIN_EXTSN, realpath)
 
 WRAP(execv)

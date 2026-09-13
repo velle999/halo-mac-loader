@@ -122,7 +122,117 @@ static __thread int agl_error;
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static int dispatch_resolved;
 
+// ---------------------------------------------------------------------------
+// The extension string
+//
+// The game copies GL_EXTENSIONS into a 4096-byte buffer, and a later driver
+// lists far more than a 2006 Mac did. It is given the extensions whose names
+// its executable contains, the only ones it can ask about, plus
+// EXT_texture_rectangle where the driver has ARB_texture_rectangle, which
+// uses the same enumerants.
+
+enum {
+  GL_EXTENSIONS = 0x1F03,
+  kMaxExtensionString = 4000,
+};
+
+static int is_name_char(char c) {
+  return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+         (c >= '0' && c <= '9') || c == '_';
+}
+
+// Whether |text| holds the |length| bytes at |name| as a whole word.
+static int has_word(const char* text, size_t size, const char* name,
+                    size_t length) {
+  const char* end = text + size;
+  for (const char* p = text; p < end &&
+       (p = memmem(p, end - p, name, length)); p += length) {
+    int starts = p == text || !is_name_char(p[-1]);
+    int ends = p + length == end || !is_name_char(p[length]);
+    if (starts && ends) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+static char* read_executable(size_t* size) {
+  FILE* f = fopen(__darwin_executable_path, "rb");
+  if (!f) {
+    return NULL;
+  }
+  cf_buf contents = { 0 };
+  char chunk[65536];
+  size_t n;
+  while ((n = fread(chunk, 1, sizeof(chunk), f)) > 0) {
+    cf_buf_append(&contents, chunk, n);
+  }
+  fclose(f);
+  *size = contents.len;
+  return contents.data;
+}
+
+static const char* game_extensions(const char* all) {
+  static pthread_mutex_t extensions_lock = PTHREAD_MUTEX_INITIALIZER;
+  static char* extensions;
+  pthread_mutex_lock(&extensions_lock);
+  if (!extensions) {
+    size_t image_size = 0;
+    char* image = read_executable(&image_size);
+    cf_buf out = { 0 };
+    cf_buf_appends(&out, "");
+    for (const char* p = all; *p;) {
+      while (*p == ' ') {
+        p++;
+      }
+      const char* end = p;
+      while (*end && *end != ' ') {
+        end++;
+      }
+      size_t length = end - p;
+      if (length && (!image || has_word(image, image_size, p, length)) &&
+          out.len + length + 1 < kMaxExtensionString) {
+        cf_buf_append(&out, p, length);
+        cf_buf_append(&out, " ", 1);
+      }
+      p = end;
+    }
+    static const char kArbRectangle[] = "GL_ARB_texture_rectangle";
+    static const char kExtRectangle[] = "GL_EXT_texture_rectangle";
+    size_t all_size = strlen(all);
+    if (image &&
+        has_word(all, all_size, kArbRectangle, sizeof(kArbRectangle) - 1) &&
+        !has_word(all, all_size, kExtRectangle, sizeof(kExtRectangle) - 1) &&
+        has_word(image, image_size, kExtRectangle, sizeof(kExtRectangle) - 1)) {
+      cf_buf_appends(&out, kExtRectangle);
+      cf_buf_append(&out, " ", 1);
+    }
+    free(image);
+    extensions = out.data;
+    cf_trace("GL_EXTENSIONS: %zu bytes of the driver's %zu, the extensions "
+             "the game names", strlen(extensions), all_size);
+  }
+  pthread_mutex_unlock(&extensions_lock);
+  return extensions;
+}
+
+// The game's glGetString, through rename.tab and the dispatch table.
+const uint8_t* __darwin_glGetString(uint32_t name) {
+  static const uint8_t* (*real_get_string)(uint32_t);
+  if (!real_get_string) {
+    real_get_string = dlsym(RTLD_DEFAULT, "glGetString");
+  }
+  const uint8_t* s = real_get_string ? real_get_string(name) : NULL;
+  if (s && name == GL_EXTENSIONS) {
+    return (const uint8_t*)game_extensions((const char*)s);
+  }
+  return s;
+}
+
 static void* lookup_gl(const char* name) {
+  if (!strcmp(name, "glGetString")) {
+    return __darwin_glGetString;
+  }
   return dlsym(RTLD_DEFAULT, name);
 }
 
