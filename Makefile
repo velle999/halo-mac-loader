@@ -113,6 +113,9 @@ tests/arb_test: tests/arb_test.c hle/arb_program.c hle/arb_program.h
 tests/sound_test: tests/sound_test.c hle/sound_mix.c hle/sound_mix.h
 	$(CC) $(CFLAGS) -o $@ tests/sound_test.c hle/sound_mix.c
 
+tests/fault_test: tests/fault_test.c hle/game_faults.c hle/game_faults.h
+	$(CC) $(CFLAGS) -o $@ tests/fault_test.c hle/game_faults.c
+
 dist:
 	cd /tmp && rm -fr maloader-$(VERSION) && git clone git@github.com:shinh/maloader.git && rm -fr maloader/.git && mv maloader maloader-$(VERSION) && tar -cvzf maloader-$(VERSION).tar.gz maloader-$(VERSION)
 

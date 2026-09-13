@@ -1274,10 +1274,22 @@ static void reportClassicFault(int signum, siginfo_t* siginfo,
 }
 #endif
 
+// libmac's hle_recover_fault, which carries the game past faults it is
+// known to take on its own. Looked up before any fault, as a lookup in the
+// handler could wait on a lock the faulting code holds.
+static int (*g_recover_fault)(int, siginfo_t*, void*);
+
+static void installSignalHandler(int signum);
+
 /* signal handler for fatal errors */
 static void handleSignal(int signum, siginfo_t* siginfo, void* vuc) {
   ucontext_t *uc = (ucontext_t*)vuc;
 #ifndef __x86_64__
+  if (g_recover_fault && g_recover_fault(signum, siginfo, vuc)) {
+    // SA_RESETHAND took the handler away on the way in.
+    installSignalHandler(signum);
+    return;
+  }
   reportClassicFault(signum, siginfo, uc);
 #endif
   void* pc = (void*)uc->uc_mcontext.gregs[
@@ -1309,17 +1321,21 @@ static void handleSignal(int signum, siginfo_t* siginfo, void* vuc) {
   }
 }
 
-/* Generate a stack backtrace when a CPU exception occurs. */
-static void initSignalHandler() {
+static void installSignalHandler(int signum) {
   struct sigaction sigact;
   sigact.sa_flags = SA_SIGINFO | SA_RESETHAND;
   sigact.sa_sigaction = handleSignal;
   sigemptyset(&sigact.sa_mask);
-  sigaction(SIGFPE, &sigact, NULL);
-  sigaction(SIGILL, &sigact, NULL);
-  sigaction(SIGSEGV, &sigact, NULL);
-  sigaction(SIGBUS, &sigact, NULL);
-  sigaction(SIGABRT, &sigact, NULL);
+  sigaction(signum, &sigact, NULL);
+}
+
+/* Generate a stack backtrace when a CPU exception occurs. */
+static void initSignalHandler() {
+  installSignalHandler(SIGFPE);
+  installSignalHandler(SIGILL);
+  installSignalHandler(SIGSEGV);
+  installSignalHandler(SIGBUS);
+  installSignalHandler(SIGABRT);
 }
 
 static bool loadLibMac(const char* mypath) {
@@ -1360,6 +1376,8 @@ static void initLibMac() {
     fprintf(stderr, "libmac not found\n");
     exit(1);
   }
+  g_recover_fault = (int (*)(int, siginfo_t*, void*))dlsym(
+      RTLD_DEFAULT, "hle_recover_fault");
 
   int* LIBMAC_LOG = (int*)dlsym(RTLD_DEFAULT, "LIBMAC_LOG");
   if (LIBMAC_LOG) {

@@ -26,6 +26,12 @@ second. The intro movies are not implemented.
 An import with no implementation is bound to a guard page, so its first use
 stops the program with its name, its caller and the registers.
 
+Halo has a fault of its own that the loader steps over. Before it saves a
+checkpoint, it looks for dangerous effects near the player, and it reads the
+node matrices of an effect's parent object even after that object has been
+deleted. That read gets zeros instead of stopping the game, and stderr says
+so; see `hle/game_faults.c`.
+
 ## Requirements
 
 - 32-bit x86 Linux with glibc. The game's i386 code needs SSE2.
@@ -85,6 +91,8 @@ executables at 0x400000, which is inside the game's image.
 - `HLE_FRAME_DUMP=<directory>` saves the first frame the game draws, and
   every 600th after it, to `frame-<n>.ppm` in that directory. With
   `HLE_TRACE=1`, each of those frames also logs the frame rate.
+- `HLE_RECOVER=0` lets the game's own fault (see Status) stop it with a crash
+  report instead of stepping over it.
 
 ## CoreFoundation
 
