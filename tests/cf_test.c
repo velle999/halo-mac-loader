@@ -45,7 +45,7 @@ CFUUIDRef CFUUIDGetConstantUUIDWithBytes(
     unsigned int, unsigned int, unsigned int, unsigned int, unsigned int,
     unsigned int, unsigned int, unsigned int, unsigned int, unsigned int,
     unsigned int, unsigned int);
-CFUUIDBytes* CFUUIDGetUUIDBytes(CFUUIDBytes*, CFUUIDRef);
+CFUUIDBytes CFUUIDGetUUIDBytes(CFUUIDRef);
 CFTypeRef CFBundleGetValueForInfoDictionaryKey(CFBundleRef, CFStringRef);
 CFURLRef CFBundleCopyResourceURL(CFBundleRef, CFStringRef, CFStringRef,
                                  CFStringRef);
@@ -218,11 +218,10 @@ static void test_scalars(void) {
                                                9, 10, 11, 12, 13, 14, 15, 16);
   CFUUIDRef b = CFUUIDGetConstantUUIDWithBytes(NULL, 1, 2, 3, 4, 5, 6, 7, 8,
                                                9, 10, 11, 12, 13, 14, 15, 16);
-  CFUUIDBytes bytes;
   check(a == b, "UUIDs intern");
-  check(CFUUIDGetUUIDBytes(&bytes, a) == &bytes && bytes.bytes[0] == 1 &&
-            bytes.bytes[15] == 16,
-        "UUID bytes through the hidden pointer");
+  CFUUIDBytes bytes = CFUUIDGetUUIDBytes(a);
+  check(bytes.bytes[0] == 1 && bytes.bytes[15] == 16,
+        "UUID bytes returned in memory");
 }
 
 static void test_bundle(void) {

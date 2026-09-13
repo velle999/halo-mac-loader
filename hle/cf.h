@@ -9,9 +9,10 @@
 // - long is 32 bits, so CFIndex and CFTypeID are too.
 // - A Boolean or UniChar result must fill all of EAX, so exported functions
 //   return int or unsigned int where CF's prototype says Boolean or UniChar.
-// - A struct returned in memory leaves its hidden pointer for the caller to
-//   pop. GCC on Linux pops it itself (ret $4), so such functions take the
-//   pointer as an explicit first parameter instead.
+// - A struct returned in memory has its hidden pointer popped by the callee
+//   (ret $4), as GCC does on Linux, so such functions return it by value.
+//   Structs of 1, 2, 4 or 8 bytes come back in EAX:EDX instead, so those
+//   return an integer of the same size.
 
 #ifndef HLE_CF_H_
 #define HLE_CF_H_
@@ -157,6 +158,10 @@ void cf_warn_once(const char* what);
 CFTypeRef CFRetain(CFTypeRef obj);
 void CFRelease(CFTypeRef obj);
 CFTypeID CFGetTypeID(CFTypeRef obj);
+CFTypeID CFNumberGetTypeID(void);
+CFTypeID CFStringGetTypeID(void);
+CFTypeID CFDictionaryGetTypeID(void);
+CFTypeID CFArrayGetTypeID(void);
 
 // Public CF used between the files of this library.
 extern const CFAllocatorRef kCFAllocatorNull;

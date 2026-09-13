@@ -176,6 +176,39 @@ static int encode_single_byte(UniChar c, CFStringEncoding encoding) {
   return c < 0x100 ? c : -1;
 }
 
+// The encoding this file knows that is closest to |encoding|: the Mac
+// script encodings read as Mac Roman, ISO 8859 as Latin-1 and the Windows
+// code pages as Windows Latin-1, which keeps their ASCII right. Says so once
+// per encoding. Returns |encoding| itself when nothing is close.
+static CFStringEncoding nearest_encoding(CFStringEncoding encoding) {
+  CFStringEncoding nearest = encoding;
+  if (encoding < 0x100) {
+    nearest = kCFStringEncodingMacRoman;
+  } else if ((encoding & 0xFF00) == 0x0200) {
+    nearest = kCFStringEncodingISOLatin1;
+  } else if ((encoding & 0xFF00) == 0x0500) {
+    nearest = kCFStringEncodingWindowsLatin1;
+  }
+  static CFStringEncoding warned[16];
+  static int warned_count;
+  for (int i = 0; i < warned_count; i++) {
+    if (warned[i] == encoding) {
+      return nearest;
+    }
+  }
+  if (warned_count < 16) {
+    warned[warned_count++] = encoding;
+    if (nearest != encoding) {
+      fprintf(stderr, "hle: string encoding %#x is read as %#x\n",
+              (unsigned)encoding, (unsigned)nearest);
+    } else {
+      fprintf(stderr, "hle: string encoding %#x is not supported\n",
+              (unsigned)encoding);
+    }
+  }
+  return nearest;
+}
+
 // Decodes |n| bytes into a malloc'd UTF-16 array. NULL for malformed input
 // or an encoding this file does not know.
 static UniChar* decode(const UInt8* bytes, CFIndex n, CFStringEncoding encoding,
@@ -234,10 +267,10 @@ static UniChar* decode(const UInt8* bytes, CFIndex n, CFStringEncoding encoding,
                               : bytes[i] | (bytes[i + 1] << 8);
     }
   } else {
-    cf_warn_once("decoding a string encoding other than MacRoman, Latin-1, "
-                 "ASCII, UTF-8 or UTF-16");
     free(out);
-    return NULL;
+    CFStringEncoding nearest = nearest_encoding(encoding);
+    return nearest == encoding ? NULL
+                               : decode(bytes, n, nearest, out_length);
   }
   *out_length = len;
   return out;
@@ -490,6 +523,10 @@ CFIndex CFStringGetBytes(CFStringRef str, CFRange range,
   CFIndex converted = 0;
   loss_byte &= 0xff;
   external_representation &= 0xff;
+  if (!is_utf16_encoding(encoding) && encoding != kCFStringEncodingUTF8 &&
+      !single_byte_encoding(encoding)) {
+    encoding = nearest_encoding(encoding);
+  }
   if (is_utf16_encoding(encoding)) {
     int big_endian = encoding == kCFStringEncodingUTF16BE;
     if (external_representation && encoding == kCFStringEncodingUnicode) {

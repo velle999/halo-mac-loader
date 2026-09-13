@@ -591,10 +591,10 @@ CFUUIDRef CFUUIDGetConstantUUIDWithBytes(
   return u;
 }
 
-// CFUUIDBytes is returned in memory; see cf.h for why the pointer is explicit.
-CFUUIDBytes* CFUUIDGetUUIDBytes(CFUUIDBytes* result, CFUUIDRef uuid) {
-  *result = uuid->bytes;
-  return result;
+// 16 bytes, so returned in memory; the callee pops the hidden pointer on
+// both sides, which GCC does for a struct returned by value.
+CFUUIDBytes CFUUIDGetUUIDBytes(CFUUIDRef uuid) {
+  return uuid->bytes;
 }
 
 // ---------------------------------------------------------------------------
