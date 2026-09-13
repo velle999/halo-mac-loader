@@ -254,15 +254,6 @@ static const char* const kClassicRenames[][2] = {
   { "_Znwm", "_Znwj" },
   { "_Znam", "_Znaj" },
 };
-
-// glibc has these, but Darwin's structs or constants differ: sockaddr starts
-// with sin_len, and SOL_SOCKET, SO_* and FIONBIO have other values. Passing
-// them straight through would misbehave silently, so they stay undefined
-// until libmac translates them.
-static const char* const kDivergentAbi[] = {
-  "bind", "connect", "getsockname", "recvfrom", "sendto", "setsockopt",
-  "ioctl",
-};
 #endif
 
 // Overwrites an i386 __IMPORT,__jump_table entry with JMP rel32.
@@ -628,14 +619,6 @@ class MachOLoader {
       LOG << "Applying renaming: " << name << " => " << found->second << endl;
       name = found->second;
     }
-#ifndef __x86_64__
-    for (size_t d = 0;
-         d < sizeof(kDivergentAbi) / sizeof(kDivergentAbi[0]); d++) {
-      if (name == kDivergentAbi[d]) {
-        return NULL;
-      }
-    }
-#endif
     char* sym = (char*)dlsym(RTLD_DEFAULT, name.c_str());
     if (!sym) {
       map<string, string>::const_iterator iter = symbol_to_so_.find(name);
@@ -857,6 +840,11 @@ class MachOLoader {
       fprintf(stderr, "ld-mac: %zu imports have no implementation yet; "
               "the first one used will name itself\n",
               g_undefined_names.size());
+      if (getenv("LD_MAC_LIST_UNDEFINED")) {
+        for (size_t i = 0; i < g_undefined_names.size(); i++) {
+          fprintf(stderr, "  %s\n", g_undefined_names[i].c_str());
+        }
+      }
     }
 
     g_file_map.addWatchDog(last_addr_ + 1);

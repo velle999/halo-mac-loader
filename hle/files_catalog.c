@@ -629,19 +629,34 @@ int FSpSetFInfo(const FSSpec* spec, const FInfo* info) {
 // ---------------------------------------------------------------------------
 // The volume
 
+// Volumes count from 1: the startup disk, then the user's disc if there is
+// one. By reference number, everything but the disc is the startup disk.
+static int is_disc(SInt16 vref, int index) {
+  if (!hle_cd_volume_name()) {
+    return 0;
+  }
+  return index > 0 ? index == 2 : vref == kHleCdVolumeRefNum;
+}
+
+static int volume_count(void) {
+  return hle_cd_volume_name() ? 2 : 1;
+}
+
 int FSGetVolumeInfo(SInt16 volume, ItemCount index, SInt16* actual,
                     FSVolumeInfoBitmap which, FSVolumeInfo* info,
                     HFSUniStr255* name, FSRef* root) {
-  if (volume == 0 && index != 1) {
-    return nsvErr;  // volumes are counted from 1, and there is one
+  if (volume == 0 && (index < 1 || index > (ItemCount)volume_count())) {
+    return nsvErr;
   }
+  int disc = is_disc(volume, volume == 0 ? (int)index : 0);
+  const char* path = disc ? hle_cd_volume_path() : "/";
   if (actual) {
-    *actual = kHleVolumeRefNum;
+    *actual = disc ? kHleCdVolumeRefNum : kHleVolumeRefNum;
   }
   if (info) {
     struct statvfs sv;
     memset(info, 0, sizeof(*info));
-    if (statvfs("/", &sv) == 0) {
+    if (statvfs(path, &sv) == 0) {
       uint64_t blocks = (uint64_t)sv.f_blocks;
       uint64_t free_blocks = (uint64_t)sv.f_bavail;
       info->blockSize = sv.f_frsize;
@@ -654,14 +669,14 @@ int FSGetVolumeInfo(SInt16 volume, ItemCount index, SInt16* actual,
     hle_utc_from_unix(now, &info->createDate);
     hle_utc_from_unix(now, &info->modifyDate);
     info->signature = HFS_PLUS_SIGNATURE;
-    info->driveNumber = 1;
+    info->driveNumber = disc ? 9 : 1;
     info->nextCatalogID = 1000000;
   }
   if (name) {
-    hle_name_to_unicode(kVolumeName, name);
+    hle_name_to_unicode(disc ? hle_cd_volume_name() : kVolumeName, name);
   }
   if (root) {
-    hle_fsref_make("/", root->hidden);
+    hle_fsref_make(path, root->hidden);
   }
   return noErr;
 }
@@ -670,27 +685,31 @@ int FSGetVolumeInfo(SInt16 volume, ItemCount index, SInt16* actual,
 // for large volumes, sizes are reported as at most 2 GB.
 int PBHGetVInfoSync(HParamBlockRec* pb) {
   HVolumeParam* v = &pb->volumeParam;
-  if (v->ioVolIndex > 1) {
+  if (v->ioVolIndex > volume_count()) {
     v->ioResult = nsvErr;
     return nsvErr;
   }
+  int disc = is_disc(v->ioVRefNum, v->ioVolIndex);
+  const char* path = disc ? hle_cd_volume_path() : "/";
   if (v->ioNamePtr) {
-    hle_name_to_pascal(kVolumeName, v->ioNamePtr, 28);
+    hle_name_to_pascal(disc ? hle_cd_volume_name() : kVolumeName,
+                       v->ioNamePtr, 28);
   }
   struct statvfs sv;
   uint64_t total = 0;
   uint64_t available = 0;
-  if (statvfs("/", &sv) == 0) {
+  if (statvfs(path, &sv) == 0) {
     total = (uint64_t)sv.f_blocks * sv.f_frsize;
     available = (uint64_t)sv.f_bavail * sv.f_frsize;
   }
   const uint64_t kCap = 0x7FFFFFFFu;
   const UInt32 kBlock = 0x8000;
   UInt32 now = hle_mac_local_seconds(time(NULL));
-  v->ioVRefNum = kHleVolumeRefNum;
+  v->ioVRefNum = disc ? kHleCdVolumeRefNum : kHleVolumeRefNum;
   v->ioVCrDate = now;
   v->ioVLsMod = now;
-  v->ioVAtrb = 0;
+  // A disc is locked in hardware and software.
+  v->ioVAtrb = disc ? 0x8080 : 0;
   v->ioVNmFls = 0;
   v->ioVBitMap = 0;
   v->ioAllocPtr = 0;
@@ -701,8 +720,8 @@ int PBHGetVInfoSync(HParamBlockRec* pb) {
   v->ioVNxtCNID = 1000000;
   v->ioVFrBlk = (available < kCap ? available : kCap) / kBlock;
   v->ioVSigWord = HFS_PLUS_SIGNATURE;
-  v->ioVDrvInfo = 1;
-  v->ioVDRefNum = -33;
+  v->ioVDrvInfo = disc ? 9 : 1;
+  v->ioVDRefNum = disc ? -34 : -33;
   v->ioVFSID = 0;
   v->ioVBkUp = 0;
   v->ioVSeqNum = 0;

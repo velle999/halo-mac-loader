@@ -89,8 +89,18 @@ RENAME(fstatfs$INODE64, __darwin_fstatfs64)
 WRAP(open)
 
 WRAP(mmap)
-WRAP(sysctl)
 WRAP(fcntl)
+
+WRAP(bind)
+WRAP(connect)
+WRAP(getsockname)
+WRAP(getsockopt)
+WRAP(ioctl)
+WRAP(recv)
+WRAP(recvfrom)
+WRAP(send)
+WRAP(sendto)
+WRAP(setsockopt)
 
 RENAME(realpath$DARWIN_EXTSN, realpath)
 

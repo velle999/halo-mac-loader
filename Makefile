@@ -13,7 +13,7 @@ endif
 CXXFLAGS=$(GCCFLAGS) -W --std=c++11
 # Darwin's off_t is 64 bits even on i386; libmac's Darwin structures and
 # the offsets games pass need Linux's to match.
-CFLAGS=$(GCCFLAGS) -fPIC -D_FILE_OFFSET_BITS=64 -Wno-multichar
+CFLAGS=$(GCCFLAGS) -fPIC -D_FILE_OFFSET_BITS=64 -Wno-multichar -Ithird_party/SDL2/include -D_REENTRANT
 
 EXES=libmac.so extract macho2elf ld-mac
 
@@ -96,13 +96,16 @@ ld-mac: ld-mac.o mach-o.o fat.o log.o
 # hle/: CoreFoundation and the rest of what Mac OS X gives the game.
 HLE_OBJS=$(patsubst %.c,%.o,$(wildcard hle/*.c))
 libmac.so: libmac/mac.o libmac/strmode.c $(HLE_OBJS)
-	$(CC) -shared $^ $(CFLAGS) -o $@ $(GCC_EXTRA_FLAGS) $(LDFLAGS) -lpthread
+	$(CC) -shared $^ $(CFLAGS) -o $@ $(GCC_EXTRA_FLAGS) $(LDFLAGS) -lpthread -lm -ldl -l:libSDL2-2.0.so.0 -l:libGL.so.1
 
 tests/cf_test: tests/cf_test.c libmac.so hle/cf.h
 	$(CC) $(CFLAGS) -o $@ tests/cf_test.c ./libmac.so -Wl,-rpath,$(CURDIR)
 
 tests/files_test: tests/files_test.c libmac.so hle/carbon.h
 	$(CC) $(CFLAGS) -o $@ tests/files_test.c ./libmac.so -Wl,-rpath,$(CURDIR)
+
+tests/crypto_test: tests/crypto_test.c tests/crypto_vectors.h hle/crypto.c
+	$(CC) $(CFLAGS) -Itests -o $@ tests/crypto_test.c hle/crypto.c
 
 dist:
 	cd /tmp && rm -fr maloader-$(VERSION) && git clone git@github.com:shinh/maloader.git && rm -fr maloader/.git && mv maloader maloader-$(VERSION) && tar -cvzf maloader-$(VERSION).tar.gz maloader-$(VERSION)

@@ -161,6 +161,7 @@ enum {
 // The one volume everything is on: the system disk, rooted at /.
 enum {
   kHleVolumeRefNum = -100,
+  kHleCdVolumeRefNum = -101,
 };
 
 #pragma pack(push, 2)
@@ -541,5 +542,12 @@ Size GetHandleSize(Handle handle);
 // Resource Manager: drops a resource handle from the loaded list without
 // disposing of it.
 void hle_resource_forget(Handle handle);
+
+// The user's disc (sysinfo.c): its volume name and the directory holding
+// its files, both NULL unless HLE_CD_PATH names a directory, and the BSD
+// name its partition has for getmntinfo and IOKit.
+const char* hle_cd_volume_name(void);
+const char* hle_cd_volume_path(void);
+const char* hle_cd_bsd_name(void);
 
 #endif  // HLE_CARBON_H_
