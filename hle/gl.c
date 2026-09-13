@@ -865,10 +865,22 @@ int32_t aglGetVirtualScreen(void* ctx) {
   return 0;
 }
 
+enum {
+  kTracedPBuffers = 8,
+};
+
 // Pbuffers are not here yet; the game is told there is no room for one.
+// What it asks for, and how often it binds one, is traced.
 Boolean aglCreatePBuffer(int32_t width, int32_t height, uint32_t target,
                          uint32_t internal_format, int32_t max_level,
                          void** pbuffer) {
+  static int traced;
+  if (traced < kTracedPBuffers) {
+    traced++;
+    cf_trace("aglCreatePBuffer(%dx%d, target %#x, format %#x, levels to %d)",
+             width, height, (unsigned)target, (unsigned)internal_format,
+             max_level);
+  }
   cf_warn_once("aglCreatePBuffer: pbuffers are not supported");
   if (pbuffer) {
     *pbuffer = NULL;
@@ -883,11 +895,21 @@ Boolean aglDestroyPBuffer(void* pbuffer) {
 
 Boolean aglSetPBuffer(void* ctx, void* pbuffer, int32_t face, int32_t level,
                       int32_t screen) {
+  static unsigned calls;
+  if (++calls == 1 || calls % kFramesPerTrace == 0) {
+    cf_trace("aglSetPBuffer(%p, face %d, level %d): call %u", pbuffer, face,
+             level, calls);
+  }
   agl_error = AGL_BAD_VALUE;
   return 0;
 }
 
 Boolean aglTexImagePBuffer(void* ctx, void* pbuffer, int32_t source) {
+  static unsigned calls;
+  if (++calls == 1 || calls % kFramesPerTrace == 0) {
+    cf_trace("aglTexImagePBuffer(%p, source %#x): call %u", pbuffer,
+             (unsigned)source, calls);
+  }
   agl_error = AGL_BAD_VALUE;
   return 0;
 }
