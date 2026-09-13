@@ -203,6 +203,32 @@ static void test_plist(void) {
     CFRelease(again);
   }
   CFRelease(plist);
+
+  // The game passes an uninitialized error string and releases whatever is
+  // left in it, so a list that parses must clear it.
+  CFPropertyListRef CFPropertyListCreateFromXMLData(CFAllocatorRef, CFDataRef,
+                                                    CFOptionFlags,
+                                                    CFStringRef*);
+  CFDataRef data = cf_data_create((const UInt8*)xml, sizeof(xml) - 1);
+  CFStringRef error_string = (CFStringRef)0x3f5f3688;
+  CFPropertyListRef from_data =
+      CFPropertyListCreateFromXMLData(NULL, data, 0, &error_string);
+  check(from_data && error_string == NULL,
+        "a list that parses clears the error string");
+  if (from_data) {
+    CFRelease(from_data);
+  }
+  CFRelease(data);
+  static const char broken[] = "this is not a property list";
+  data = cf_data_create((const UInt8*)broken, sizeof(broken) - 1);
+  error_string = NULL;
+  from_data = CFPropertyListCreateFromXMLData(NULL, data, 0, &error_string);
+  check(!from_data && error_string != NULL,
+        "a list that does not parse sets the error string");
+  if (error_string) {
+    CFRelease(error_string);
+  }
+  CFRelease(data);
 }
 
 static void test_scalars(void) {

@@ -407,8 +407,10 @@ CFPropertyListRef CFPropertyListCreateFromXMLData(CFAllocatorRef allocator,
   const char* error = NULL;
   CFPropertyListRef plist = cf_plist_parse((const char*)cf_data_bytes(xml),
                                            cf_data_length(xml), &error);
-  if (!plist && error_string) {
-    *error_string = cf_string_from_utf8(error, strlen(error));
+  // CF clears the error string on success, and the game counts on it: it
+  // passes an uninitialized one and releases whatever comes back.
+  if (error_string) {
+    *error_string = plist ? NULL : cf_string_from_utf8(error, strlen(error));
   }
   return plist;
 }
