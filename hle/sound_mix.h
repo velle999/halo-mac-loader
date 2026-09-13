@@ -115,11 +115,12 @@ typedef struct {
   uint8_t playing;
 } hle_sound_voice;
 
-// Adds |frames| frames of |voice|, resampled to |output_rate|, to |mix|,
-// which holds a left and a right sum for each frame. The voice stops
-// playing when it reaches the end of its buffer.
-void hle_sound_voice_mix(hle_sound_voice* voice, int32_t* mix, int frames,
-                         int output_rate);
+// Adds up to |frames| frames of |voice|, resampled to |output_rate|, to
+// |mix|, which holds a left and a right sum for each frame, and returns how
+// many it added. At the end of its buffer the voice stops playing, having
+// added fewer.
+int hle_sound_voice_mix(hle_sound_voice* voice, int32_t* mix, int frames,
+                        int output_rate);
 
 // How long what is left of |voice| takes to play, in nanoseconds;
 // UINT64_MAX while its rate multiplier holds it.

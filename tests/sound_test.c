@@ -67,7 +67,8 @@ int main(void) {
         "a standard header's samples follow it");
   voice = voice_for(&buffer);
   memset(mix, 0, sizeof(mix));
-  hle_sound_voice_mix(&voice, mix, 8, 44100);
+  check(hle_sound_voice_mix(&voice, mix, 8, 44100) == 4,
+        "a voice adds only the frames its buffer has");
   static const int32_t kStandardMix[16] = {
     0, 0, 0x7F00, 0x7F00, -0x8000, -0x8000, 0x1000, 0x1000,
   };
@@ -94,7 +95,8 @@ int main(void) {
         "an extended header is read");
   voice = voice_for(&buffer);
   memset(mix, 0, sizeof(mix));
-  hle_sound_voice_mix(&voice, mix, 8, 44100);
+  check(hle_sound_voice_mix(&voice, mix, 8, 44100) == 4,
+        "two frames at half the output rate add four");
   static const int32_t kExtendedMix[16] = {
     0x0100, -0x0100, 0x0100, -0x0100, 0x7FFF, -0x8000, 0x7FFF, -0x8000,
   };
@@ -153,14 +155,16 @@ int main(void) {
   voice = voice_for(&buffer);
   voice.rate_multiplier = 0x20000;
   memset(mix, 0, sizeof(mix));
-  hle_sound_voice_mix(&voice, mix, 4, 44100);
+  check(hle_sound_voice_mix(&voice, mix, 4, 44100) == 2,
+        "four frames at twice the rate add two");
   static const int32_t kDoubled[4] = { 0x1000, 0x3000, 0, 0 };
   check(left_sums_are(mix, kDoubled, 4) && !voice.playing,
         "a rate multiplier of 2 plays every other frame");
   voice = voice_for(&buffer);
   voice.rate_multiplier = 0;
   memset(mix, 0, sizeof(mix));
-  hle_sound_voice_mix(&voice, mix, 4, 44100);
+  check(hle_sound_voice_mix(&voice, mix, 4, 44100) == 0,
+        "a voice held by a rate multiplier of 0 adds nothing");
   check(mix[0] == 0 && voice.playing && voice.position == 0 &&
             hle_sound_voice_remaining_ns(&voice) == UINT64_MAX,
         "a rate multiplier of 0 holds the voice");

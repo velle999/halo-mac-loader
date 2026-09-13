@@ -153,10 +153,10 @@ static int32_t sample_at(const hle_sound_buffer* buffer, uint32_t frame,
                             : (int16_t)(p[1] << 8 | p[0]);
 }
 
-void hle_sound_voice_mix(hle_sound_voice* voice, int32_t* mix, int frames,
-                         int output_rate) {
+int hle_sound_voice_mix(hle_sound_voice* voice, int32_t* mix, int frames,
+                        int output_rate) {
   if (!voice->playing || !voice->rate_multiplier || output_rate <= 0) {
-    return;
+    return 0;
   }
   const hle_sound_buffer* buffer = &voice->buffer;
   // Buffer frames for each output frame, 32.32.
@@ -164,7 +164,8 @@ void hle_sound_voice_mix(hle_sound_voice* voice, int32_t* mix, int frames,
                   (uint64_t)output_rate;
   int32_t left = (int32_t)voice->left * voice->amplitude / 255;
   int32_t right = (int32_t)voice->right * voice->amplitude / 255;
-  for (int i = 0; i < frames; i++) {
+  int i = 0;
+  for (; i < frames; i++) {
     uint32_t frame = (uint32_t)(voice->position >> 32);
     if (frame >= buffer->frames) {
       break;
@@ -186,6 +187,7 @@ void hle_sound_voice_mix(hle_sound_voice* voice, int32_t* mix, int frames,
   if ((voice->position >> 32) >= buffer->frames) {
     voice->playing = 0;
   }
+  return i;
 }
 
 uint64_t hle_sound_voice_remaining_ns(const hle_sound_voice* voice) {
