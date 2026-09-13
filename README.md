@@ -55,6 +55,9 @@ executables at 0x400000, which is inside the game's image.
 - `HLE_VRAM_MB` is the video memory the renderer reports, 256 by default.
 - `HLE_SOUND=0` keeps the game silent. Otherwise its sound goes to SDL's
   default audio device, or to the one `SDL_AUDIODRIVER` names.
+  `HLE_AUDIO_FRAMES` is the device's buffer in frames, 2048 (46 ms) by
+  default; a slow machine whose sound breaks up needs more, at the cost of
+  delay.
 - Dialogs are answered without being shown. When the game runs a dialog
   from its NIB, `HLE_CONTROL_<code>=<value>` first sets the control with that
   four-letter signature (`HLE_CONTROL_FSAA=2` picks the second FSAA setting),

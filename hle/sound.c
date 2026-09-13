@@ -63,7 +63,10 @@ enum {
   kStdQLength = 128,
   kQueueCapacity = 256,
   kOutputRate = 44100,
-  kOutputFrames = 1024,
+  // While the game draws, a Pentium 4 leaves SDL's audio thread waiting 35
+  // to 60 ms for the processor, longer than 1024 frames last, and the sound
+  // broke up. HLE_AUDIO_FRAMES sets another size.
+  kOutputFrames = 2048,
   // Commands one channel runs in one pass of the mixer at most, so a
   // callback that queues only another callback cannot hold the mixer.
   kCommandsPerPass = 64,
@@ -462,7 +465,10 @@ static void open_device(void) {
   want.freq = kOutputRate;
   want.format = AUDIO_S16SYS;
   want.channels = 2;
-  want.samples = kOutputFrames;
+  const char* frames = getenv("HLE_AUDIO_FRAMES");
+  want.samples = frames && atoi(frames) > 0 && atoi(frames) <= 32768
+                     ? (Uint16)atoi(frames)
+                     : kOutputFrames;
   want.callback = mix;
   SDL_AudioDeviceID opened = SDL_OpenAudioDevice(
       NULL, 0, &want, &have, SDL_AUDIO_ALLOW_FREQUENCY_CHANGE);

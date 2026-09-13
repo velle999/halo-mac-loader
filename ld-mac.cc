@@ -34,6 +34,7 @@
 #include <execinfo.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <malloc.h>
 #include <memory>
 #include <signal.h>
 #include <stdio.h>
@@ -1466,6 +1467,15 @@ void initDlfcn() {
 }
 
 int main(int argc, char* argv[], char* envp[]) {
+#ifdef __GLIBC__
+  // glibc gives memory back to the kernel as soon as a block at the top of
+  // the heap, or one it mapped on its own, is freed, more eagerly than Mac
+  // OS X's allocator. Halo has faulted in NVIDIA's driver drawing a vertex
+  // array from a heap page no longer mapped. Every block comes from the
+  // heap, and the heap never shrinks.
+  mallopt(M_MMAP_MAX, 0);
+  mallopt(M_TRIM_THRESHOLD, -1);
+#endif
   g_timer.start();
   initSignalHandler();
   initRename();
