@@ -41,6 +41,18 @@ enum {
 static void pump(double max_wait);
 static void set_pointer(int x, int y);
 
+// HLE_HOLD_POINTER=0 leaves the desktop's pointer alone even while the game's
+// window has the focus: no relative mode and no warps, for a run nobody
+// plays, such as the time demo.
+static int hold_pointer(void) {
+  static int hold = -1;
+  if (hold < 0) {
+    const char* setting = getenv("HLE_HOLD_POINTER");
+    hold = !(setting && strcmp(setting, "0") == 0);
+  }
+  return hold;
+}
+
 int hle_sdl_video(void) {
   if (video_state == 0) {
     SDL_SetHint(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, "0");
@@ -175,7 +187,7 @@ int hle_sdl_switch_mode(const hle_display_mode* mode) {
 void hle_sdl_warp_mouse(int x, int y) {
   set_pointer(x, y);
   warped = 1;
-  int focused = game_window &&
+  int focused = game_window && hold_pointer() &&
                 (SDL_GetWindowFlags(game_window) & SDL_WINDOW_INPUT_FOCUS);
   static int traced;
   if (traced < kTracedMouseEvents) {
@@ -492,7 +504,7 @@ static void pump(double max_wait) {
   if (game_window) {
     int reading = hle_cursor_hidden() || hle_cursor_hide_requested() ||
                   warped;
-    int want = reading &&
+    int want = reading && hold_pointer() &&
                (SDL_GetWindowFlags(game_window) & SDL_WINDOW_INPUT_FOCUS);
     if (want != (int)SDL_GetRelativeMouseMode()) {
       SDL_SetRelativeMouseMode(want ? SDL_TRUE : SDL_FALSE);

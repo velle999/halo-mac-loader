@@ -65,6 +65,11 @@ executables at 0x400000, which is inside the game's image.
   then the default button's command is sent, or the one `HLE_DIALOG_<name>`
   gives (`HLE_DIALOG_EULA=not!` declines the licence). stderr says what was
   chosen. Alerts print their text and take their default button.
+- `HLE_CONTROL_Time=1` ticks "Run Time Demo" in the game's startup dialog: the
+  game flies through four campaign levels with nobody at the controls and
+  quits, which makes a repeatable benchmark. `HLE_HOLD_POINTER=0` leaves the
+  desktop's pointer free even while the game's window has the focus, for
+  runs like that.
 - Classic dialogs from `DLOG` resources are answered the same way:
   `HLE_DIALOG_<id>` fills their text fields, split at dashes, and their first
   button is hit; without it, or when the game refuses the text, their second

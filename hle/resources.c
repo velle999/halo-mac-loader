@@ -341,8 +341,72 @@ void GetIndString(unsigned char* out, SInt16 list_id, SInt16 index) {
   }
 }
 
-// The System file's international resources do not exist here.
+static void pascal_into(uint8_t* field, size_t size, const char* text) {
+  size_t n = strlen(text);
+  if (n > size - 1) {
+    n = size - 1;
+  }
+  field[0] = (uint8_t)n;
+  memcpy(field + 1, text, n);
+}
+
+// The System file's international resources, as a US English Mac has them:
+// 'itl0', the formats of numbers, dates and times, and 'itl1', the names of
+// days and months. Halo dates its time demo's results with them.
 Handle GetIntlResource(SInt16 id) {
+  static Handle itl0;
+  static Handle itl1;
+  if (id == 0) {
+    if (!itl0) {
+      static const uint8_t kIntl0[32] = {
+        '.', ',', ';', '$', 0, 0,  // decimal point, separators, currency
+        0xC0,  // currency with leading and trailing zeros
+        0,  // dates in month, day, year order
+        0x80,  // short dates with the century
+        '/',
+        255,  // a 12-hour clock
+        0xC0,  // minutes and seconds with leading zeros
+        'A', 'M', 0, 0,
+        'P', 'M', 0, 0,
+        ':',
+        0, 0, 0, 0, 0, 0, 0, 0,  // no time suffixes
+        0,  // not metric
+        0, 0,  // version
+      };
+      itl0 = hle_handle_new(kIntl0, sizeof(kIntl0), 1);
+    }
+    res_error = itl0 ? noErr : memFullErr;
+    return itl0;
+  }
+  if (id == 1) {
+    if (!itl1) {
+      static const char* const kDays[7] = {
+        "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
+        "Saturday",
+      };
+      static const char* const kMonths[12] = {
+        "January", "February", "March", "April", "May", "June", "July",
+        "August", "September", "October", "November", "December",
+      };
+      uint8_t intl1[332];
+      memset(intl1, 0, sizeof(intl1));
+      for (int i = 0; i < 7; i++) {
+        pascal_into(intl1 + 16 * i, 16, kDays[i]);
+      }
+      for (int i = 0; i < 12; i++) {
+        pascal_into(intl1 + 112 + 16 * i, 16, kMonths[i]);
+      }
+      intl1[307] = 3;  // abbreviations of three letters
+      memcpy(intl1 + 312, ", ", 2);  // after the day of the week
+      memcpy(intl1 + 316, " ", 1);  // after the month
+      memcpy(intl1 + 320, ", ", 2);  // after the day
+      intl1[330] = 0x4E;  // no local routine: RTS
+      intl1[331] = 0x75;
+      itl1 = hle_handle_new(intl1, sizeof(intl1), 1);
+    }
+    res_error = itl1 ? noErr : memFullErr;
+    return itl1;
+  }
   char what[64];
   snprintf(what, sizeof(what), "GetIntlResource(%d)", id);
   fprintf(stderr, "hle: not implemented yet: %s\n", what);
