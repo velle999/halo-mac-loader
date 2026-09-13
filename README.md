@@ -143,10 +143,11 @@ bundles and localized strings, preferences, UUIDs and character sets.
   (`objects.xib`) and are kept as records the game queries; only a window the
   game draws in with OpenGL is real. The Carbon Event Manager, window groups,
   the Process Manager and Multiprocessing Services are implemented. SDL input
-  arrives as Carbon keyboard and mouse events with Mac key codes, and while
-  the game hides the cursor the pointer is held in relative mode. The game's
-  warps move the desktop's pointer only while its window has the keyboard
-  focus.
+  arrives as Carbon keyboard and mouse events with Mac key codes, taken in
+  even by calls that do not wait for events. While the game's window has the
+  focus and the game has taken the mouse (it hid the pointer, or it warps
+  it), the pointer is held in relative mode: motion moves the position the
+  game reads, and the game's warps move only that position.
 - QuickDraw keeps ports, GWorlds with real pixels, colors and rectangles.
 - Sound Manager channels play through one SDL audio device. A channel's
   buffers are mixed at their own rate times the channel's rate multiplier,

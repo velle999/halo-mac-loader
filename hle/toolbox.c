@@ -200,17 +200,30 @@ int hle_cursor_hidden(void) {
   return cursor_hidden > 0;
 }
 
+// Whether HideCursor has been called more often than ShowCursor. A game
+// hides the pointer when it takes the mouse and shows it when it lets go;
+// InitCursor, which shows the pointer at once, does not end that.
+static int hide_requests;
+
+int hle_cursor_hide_requested(void) {
+  return hide_requests > 0;
+}
+
 void InitCursor(void) {
   cursor_hidden = 0;
 }
 
 void HideCursor(void) {
   cursor_hidden++;
+  hide_requests++;
 }
 
 void ShowCursor(void) {
   if (cursor_hidden > 0) {
     cursor_hidden--;
+  }
+  if (hide_requests > 0) {
+    hide_requests--;
   }
 }
 

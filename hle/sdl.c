@@ -21,6 +21,7 @@
 #include "gui.h"
 
 int hle_cursor_hidden(void);
+int hle_cursor_hide_requested(void);
 UInt32 GetCurrentKeyModifiers(void);
 
 static int video_state;  // 0 untried, 1 running, -1 failed
@@ -31,8 +32,14 @@ static SDL_Window* game_window;
 static hle_window* game_carbon_window;
 static int game_fullscreen;
 static Rect game_content;  // where the game believes its drawing is
+static int warped;  // since the game's window last lost the focus
+
+enum {
+  kTracedMouseEvents = 12,
+};
 
 static void pump(double max_wait);
+static void set_pointer(int x, int y);
 
 int hle_sdl_video(void) {
   if (video_state == 0) {
@@ -123,7 +130,13 @@ void* hle_sdl_window_for(hle_window* window, int fullscreen, int width,
   game_content.right = game_content.left + width;
   game_fullscreen = fullscreen;
   SDL_ShowWindow(game_window);
-  SDL_RaiseWindow(game_window);
+  // On X11 raising a window gives it the focus, so a window asked to show
+  // without taking it, as test runs ask with
+  // SDL_WINDOW_NO_ACTIVATION_WHEN_SHOWN, is not raised.
+  if (!SDL_GetHintBoolean(SDL_HINT_WINDOW_NO_ACTIVATION_WHEN_SHOWN,
+                          SDL_FALSE)) {
+    SDL_RaiseWindow(game_window);
+  }
   return game_window;
 }
 
@@ -153,13 +166,25 @@ int hle_sdl_switch_mode(const hle_display_mode* mode) {
   return SDL_SetWindowDisplayMode(game_window, &closest) == 0;
 }
 
-// The game warps the pointer back to the middle of its window every frame
-// it reads the mouse. Only a window with the keyboard focus, the one being
-// played, moves the desktop's pointer; otherwise the warp is only recorded.
+// Halo reads the mouse the way its DirectInput layer did on Windows: the
+// pointer's distance from the middle of the window is the motion, and it
+// warps the pointer back after each read. While the game's window has the
+// focus the pointer is held in relative mode (see pump), a warp moves only
+// the position the game reads, and motion adds to that position. Without
+// the focus the desktop's pointer is left alone.
 void hle_sdl_warp_mouse(int x, int y) {
-  hle_input_mouse_position(x, y);
-  if (game_window && !SDL_GetRelativeMouseMode() &&
-      (SDL_GetWindowFlags(game_window) & SDL_WINDOW_INPUT_FOCUS)) {
+  set_pointer(x, y);
+  warped = 1;
+  int focused = game_window &&
+                (SDL_GetWindowFlags(game_window) & SDL_WINDOW_INPUT_FOCUS);
+  static int traced;
+  if (traced < kTracedMouseEvents) {
+    traced++;
+    cf_trace("warp to %d,%d%s", x, y,
+             SDL_GetRelativeMouseMode() ? ", the pointer held"
+             : focused ? "" : ", recorded only: the window has no focus");
+  }
+  if (focused && !SDL_GetRelativeMouseMode()) {
     SDL_WarpMouseInWindow(game_window, x - game_content.left,
                           y - game_content.top);
   }
@@ -321,6 +346,13 @@ typedef struct {
 static SInt16 mouse_x;
 static SInt16 mouse_y;
 
+// Moves the position the game reads, which also locates mouse events.
+static void set_pointer(int x, int y) {
+  mouse_x = (SInt16)x;
+  mouse_y = (SInt16)y;
+  hle_input_mouse_position(mouse_x, mouse_y);
+}
+
 static UInt16 mac_button(Uint8 sdl_button) {
   switch (sdl_button) {
     case SDL_BUTTON_LEFT: return 1;
@@ -342,11 +374,27 @@ static EventRef mouse_event(UInt32 kind) {
 
 static void post_motion(const SDL_MouseMotionEvent* e) {
   if (SDL_GetRelativeMouseMode()) {
-    // The pointer stays where the game last put it.
+    // Held: the motion moves the position the game last read or warped
+    // to, kept within its drawing.
+    int x = mouse_x + e->xrel;
+    int y = mouse_y + e->yrel;
+    if (game_content.right > game_content.left &&
+        game_content.bottom > game_content.top) {
+      x = x < game_content.left ? game_content.left
+          : x >= game_content.right ? game_content.right - 1 : x;
+      y = y < game_content.top ? game_content.top
+          : y >= game_content.bottom ? game_content.bottom - 1 : y;
+    }
+    set_pointer(x, y);
   } else {
-    mouse_x = game_content.left + e->x;
-    mouse_y = game_content.top + e->y;
-    hle_input_mouse_position(mouse_x, mouse_y);
+    set_pointer(game_content.left + e->x, game_content.top + e->y);
+  }
+  static int traced;
+  if (traced < kTracedMouseEvents) {
+    traced++;
+    cf_trace("mouse motion to %d,%d by %d,%d in window %u%s; the game reads "
+             "%d,%d", e->x, e->y, e->xrel, e->yrel, e->windowID,
+             SDL_GetRelativeMouseMode() ? ", held" : "", mouse_x, mouse_y);
   }
   EventRef event = mouse_event(e->state ? kEventMouseDragged
                                         : kEventMouseMoved);
@@ -359,6 +407,12 @@ static void post_motion(const SDL_MouseMotionEvent* e) {
 static void post_button(const SDL_MouseButtonEvent* e) {
   int down = e->type == SDL_MOUSEBUTTONDOWN;
   UInt16 button = mac_button(e->button);
+  static int traced;
+  if (traced < kTracedMouseEvents) {
+    traced++;
+    cf_trace("mouse button %u %s in window %u; the game reads %d,%d", button,
+             down ? "down" : "up", e->windowID, mouse_x, mouse_y);
+  }
   hle_input_mouse_button(button - 1, down);
   EventRef event = mouse_event(down ? kEventMouseDown : kEventMouseUp);
   UInt32 clicks = e->clicks;
@@ -395,6 +449,11 @@ static void post_quit(void) {
 }
 
 static void handle(const SDL_Event* e) {
+  static int traced;
+  if (traced < kTracedMouseEvents) {
+    traced++;
+    cf_trace("SDL event %#x", e->type);
+  }
   switch (e->type) {
     case SDL_QUIT:
       post_quit();
@@ -414,7 +473,11 @@ static void handle(const SDL_Event* e) {
       post_wheel(&e->wheel);
       break;
     case SDL_WINDOWEVENT:
-      if (e->window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
+      if (e->window.event == SDL_WINDOWEVENT_FOCUS_GAINED) {
+        cf_trace("window %u has the focus", e->window.windowID);
+      } else if (e->window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
+        cf_trace("window %u lost the focus", e->window.windowID);
+        warped = 0;
         release_all_keys();
         SDL_SetRelativeMouseMode(SDL_FALSE);
       }
@@ -423,9 +486,13 @@ static void handle(const SDL_Event* e) {
 }
 
 static void pump(double max_wait) {
-  // Hold the pointer while the game hides it and has the window's focus.
+  // Hold the pointer while the game's window has the focus and the game has
+  // taken the mouse: it hid the pointer, or it warps it. Halo warps only
+  // when the pointer has moved, so a resting mouse must stay held.
   if (game_window) {
-    int want = hle_cursor_hidden() &&
+    int reading = hle_cursor_hidden() || hle_cursor_hide_requested() ||
+                  warped;
+    int want = reading &&
                (SDL_GetWindowFlags(game_window) & SDL_WINDOW_INPUT_FOCUS);
     if (want != (int)SDL_GetRelativeMouseMode()) {
       SDL_SetRelativeMouseMode(want ? SDL_TRUE : SDL_FALSE);

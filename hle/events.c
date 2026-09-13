@@ -715,7 +715,9 @@ int QuitAppModalLoopForWindow(void* window) {
 int ReceiveNextEvent(UInt32 count, const EventTypeSpec* types, double timeout,
                      unsigned int pull, EventRef* out) {
   double deadline = timeout < 0 ? HUGE_VAL : now_seconds() + timeout;
-  for (;;) {
+  // Input that has arrived is taken in before a call gives up, even one
+  // that does not wait: Halo polls with kEventDurationNoWait every frame.
+  for (int pumped = 0;; pumped = 1) {
     if (hle_loop_hook) {
       hle_loop_hook();
     }
@@ -729,13 +731,16 @@ int ReceiveNextEvent(UInt32 count, const EventTypeSpec* types, double timeout,
       return eventLoopQuitErr;
     }
     double remaining = deadline - now_seconds();
-    if (remaining <= 0) {
+    if (remaining <= 0 && pumped) {
       return eventLoopTimedOutErr;
     }
     double wait = remaining < until_timer ? remaining : until_timer;
+    if (wait < 0) {
+      wait = 0;
+    }
     if (hle_event_pump) {
       hle_event_pump(wait);
-    } else {
+    } else if (wait > 0) {
       usleep((useconds_t)((wait < 0.01 ? wait : 0.01) * 1e6));
     }
   }
