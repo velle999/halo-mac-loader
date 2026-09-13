@@ -538,6 +538,43 @@ void hle_report_game_mappings(uintptr_t fault) {
   }
 }
 
+#ifndef MAP_FIXED_NOREPLACE
+#define MAP_FIXED_NOREPLACE 0x100000
+#endif
+
+// Says which mappings a fixed mapping of [|start|, |end|) replaces, unless
+// it lies within one the game made. Memory a library still used would be
+// the game's from then on, and Linux replaces it without a word.
+static void report_replaced_mappings(uintptr_t start, uintptr_t end) {
+  pthread_mutex_lock(&game_mapping_lock);
+  int n = game_mapping_calls < kGameMappings ? game_mapping_calls
+                                             : kGameMappings;
+  int own = 0;
+  for (int i = 0; i < n && !own; i++) {
+    const game_mapping* m = &game_mappings[i];
+    own = m->got != MAP_FAILED && (uintptr_t)m->got <= start &&
+          end <= (uintptr_t)m->got + m->length;
+  }
+  pthread_mutex_unlock(&game_mapping_lock);
+  if (own) {
+    return;
+  }
+  fprintf(stderr, "hle: the game's mmap of %p-%p replaces memory already "
+          "mapped there:\n", (void*)start, (void*)end);
+  FILE* maps = fopen("/proc/self/maps", "r");
+  if (!maps) {
+    return;
+  }
+  char line[512];
+  while (fgets(line, sizeof(line), maps)) {
+    unsigned long lo, hi;
+    if (sscanf(line, "%lx-%lx", &lo, &hi) == 2 && lo < end && hi > start) {
+      fprintf(stderr, "  %s", line);
+    }
+  }
+  fclose(maps);
+}
+
 void *__darwin_mmap(void *addr, size_t length, int prot, int flags,
                     int fd, off_t offset) {
   LOGF("mmap: addr=%p length=%lu prot=%d flags=%d fd=%d offset=%lld\n",
@@ -554,6 +591,23 @@ void *__darwin_mmap(void *addr, size_t length, int prot, int flags,
   // #define MAP_HASSEMAPHORE 0x0200 /* region may contain semaphores */
   // #define MAP_NOCACHE      0x0400 /* don't cache pages for this mapping */
   flags = (flags & 0x1f) | (flags & 0x1000 ? MAP_ANONYMOUS : 0);
+  if ((flags & MAP_FIXED) && addr) {
+    // Without replacing anything first, to say what a fixed mapping
+    // replaces.
+    void* placed = mmap(addr, length, prot,
+                        (flags & ~MAP_FIXED) | MAP_FIXED_NOREPLACE, fd,
+                        offset);
+    if (placed == addr) {
+      record_game_mapping(addr, placed, length, prot, darwin_flags, fd);
+      return placed;
+    }
+    if (placed != MAP_FAILED) {
+      // A kernel before 4.17 takes the address as a hint.
+      munmap(placed, length);
+    } else if (errno == EEXIST) {
+      report_replaced_mappings((uintptr_t)addr, (uintptr_t)addr + length);
+    }
+  }
   void* result = mmap(addr, length, prot, flags, fd, offset);
   record_game_mapping(addr, result, length, prot, darwin_flags, fd);
   return result;

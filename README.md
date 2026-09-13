@@ -199,6 +199,9 @@ bundles and localized strings, preferences, UUIDs and character sets.
   variable, `bootstrap_port`, a monotonic `mach_absolute_time`.
 - An unimplemented import stops the program with its name, its caller, the
   registers and the frame-pointer chain.
+- A fixed `mmap` that replaces memory mapped by something other than the
+  program says so on stderr, with the mappings it replaces; Linux replaces
+  them silently.
 - `sysctl` and `sysctlbyname` answer as a 10.4.9 Intel Mac with this
   machine's CPU and memory; maloader's `sysctl` aborted on most queries.
 - Lookups the program makes at run time, through
