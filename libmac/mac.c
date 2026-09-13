@@ -170,10 +170,14 @@ static const char kVersion[] = "Darwin Kernel Version 15.6.0: "
     "Mon Aug 29 20:21:34 PDT 2016; root:xnu-3248.60.11~1/RELEASE_X86_64";
 static const char kMachine[] = "x86_64";
 
+// Defined below, with the stdio wrappers.
+static const char* mac_path(const char* path, char* buffer, size_t size);
+
 int __darwin_stat64(const char* path, struct __darwin_stat64* mac) {
   LOGF("stat64: path=%s buf=%p\n", path, mac);
   struct stat64 linux_buf;
-  int ret = stat64(path, &linux_buf);
+  char buffer[PATH_MAX];
+  int ret = stat64(mac_path(path, buffer, sizeof(buffer)), &linux_buf);
   __translate_stat64(&linux_buf, mac);
   return ret;
 }
@@ -190,7 +194,8 @@ int __darwin_fstat64(int fd, struct __darwin_stat64* mac) {
 int __darwin_lstat64(const char* path, struct __darwin_stat64* mac) {
   LOGF("lstat64: path=%s buf=%p\n", path, mac);
   struct stat64 linux_buf;
-  int ret = lstat64(path, &linux_buf);
+  char buffer[PATH_MAX];
+  int ret = lstat64(mac_path(path, buffer, sizeof(buffer)), &linux_buf);
   __translate_stat64(&linux_buf, mac);
   return ret;
 }
@@ -198,7 +203,8 @@ int __darwin_lstat64(const char* path, struct __darwin_stat64* mac) {
 int __darwin_stat(const char* path, struct __darwin_stat* mac) {
   LOGF("stat: path=%s buf=%p\n", path, mac);
   struct stat64 linux_buf;
-  int ret = stat64(path, &linux_buf);
+  char buffer[PATH_MAX];
+  int ret = stat64(mac_path(path, buffer, sizeof(buffer)), &linux_buf);
   __translate_stat(&linux_buf, mac);
   return ret;
 }
@@ -215,7 +221,8 @@ int __darwin_fstat(int fd, struct __darwin_stat* mac) {
 int __darwin_lstat(const char* path, struct __darwin_stat* mac) {
   LOGF("lstat: path=%s buf=%p\n", path, mac);
   struct stat64 linux_buf;
-  int ret = lstat64(path, &linux_buf);
+  char buffer[PATH_MAX];
+  int ret = lstat64(mac_path(path, buffer, sizeof(buffer)), &linux_buf);
   __translate_stat(&linux_buf, mac);
   return ret;
 }
@@ -579,8 +586,86 @@ static __darwin_FILE* __init_darwin_FILE(FILE* linux_fp) {
   return fp;
 }
 
+// Mac file systems ignore case, and the game counts on it: it opens
+// "shaders/vsh/..." where the folder is Shaders. A path that does not exist
+// as given is looked up without regard to case (hle/cf_url_bundle.c), and
+// one about to be created keeps its name in the directory found that way.
+int hle_path_resolve(const char* path, char* out, size_t out_size);
+void cf_trace(const char* fmt, ...);
+const char* hle_cd_volume_name(void);
+const char* hle_cd_volume_path(void);
+
+// A path on a mounted volume, /Volumes/<name>/..., as a path here: the
+// user's disc is the directory HLE_CD_PATH names (hle/sysinfo.c), and the
+// startup disk, Macintosh HD, is /.
+static int map_volume(const char* path, char* out, size_t size) {
+  static const char kPrefix[] = "/Volumes/";
+  static const char kStartupDisk[] = "Macintosh HD";
+  if (strncmp(path, kPrefix, sizeof(kPrefix) - 1) != 0) {
+    return 0;
+  }
+  const char* name = path + sizeof(kPrefix) - 1;
+  const char* rest = strchr(name, '/');
+  size_t length = rest ? (size_t)(rest - name) : strlen(name);
+  const char* disc = hle_cd_volume_name();
+  const char* root = NULL;
+  if (disc && strlen(disc) == length && !strncasecmp(name, disc, length)) {
+    root = hle_cd_volume_path();
+  } else if (length == sizeof(kStartupDisk) - 1 &&
+             !strncasecmp(name, kStartupDisk, length)) {
+    root = "";
+  }
+  if (!root) {
+    return 0;
+  }
+  int n = snprintf(out, size, "%s%s", root, rest ? rest : (*root ? "" : "/"));
+  return n > 0 && (size_t)n < size;
+}
+
+static const char* mac_path(const char* path, char* buffer, size_t size) {
+  if (!path || !*path) {
+    return path;
+  }
+  char mapped[PATH_MAX];
+  if (map_volume(path, mapped, sizeof(mapped))) {
+    path = mapped;
+  }
+  if (access(path, F_OK) != 0) {
+    if (hle_path_resolve(path, buffer, size)) {
+      return buffer;
+    }
+    const char* slash = strrchr(path, '/');
+    if (slash && slash != path) {
+      char dir[PATH_MAX];
+      size_t n = slash - path;
+      if (n < sizeof(dir)) {
+        memcpy(dir, path, n);
+        dir[n] = '\0';
+        if (hle_path_resolve(dir, buffer, size) &&
+            strlen(buffer) + strlen(slash) < size) {
+          strcat(buffer, slash);
+          return buffer;
+        }
+      }
+    }
+  }
+  if (path == mapped) {
+    // The mapped path lives on this stack; the caller gets a copy.
+    snprintf(buffer, size, "%s", mapped);
+    return buffer;
+  }
+  return path;
+}
+
 __darwin_FILE* __darwin_fopen(const char* path, const char* mode) {
-  return __init_darwin_FILE(fopen(path, mode));
+  char buffer[PATH_MAX];
+  FILE* fp = fopen(mac_path(path, buffer, sizeof(buffer)), mode);
+  if (!fp) {
+    int e = errno;
+    cf_trace("fopen(%s, %s): %s", path, mode, strerror(e));
+    errno = e;
+  }
+  return __init_darwin_FILE(fp);
 }
 
 __darwin_FILE* __darwin_fdopen(int fd, const char* mode) {
@@ -589,7 +674,34 @@ __darwin_FILE* __darwin_fdopen(int fd, const char* mode) {
 
 __darwin_FILE* __darwin_freopen(const char* path, const char* mode,
                                 __darwin_FILE* fp) {
-  return __init_darwin_FILE(freopen(path, mode, fp->linux_fp));
+  char buffer[PATH_MAX];
+  return __init_darwin_FILE(
+      freopen(mac_path(path, buffer, sizeof(buffer)), mode, fp->linux_fp));
+}
+
+int __darwin_access(const char* path, int mode) {
+  char buffer[PATH_MAX];
+  return access(mac_path(path, buffer, sizeof(buffer)), mode);
+}
+
+int __darwin_mkdir(const char* path, mode_t mode) {
+  char buffer[PATH_MAX];
+  return mkdir(mac_path(path, buffer, sizeof(buffer)), mode);
+}
+
+int __darwin_remove(const char* path) {
+  char buffer[PATH_MAX];
+  return remove(mac_path(path, buffer, sizeof(buffer)));
+}
+
+int __darwin_chmod(const char* path, mode_t mode) {
+  char buffer[PATH_MAX];
+  return chmod(mac_path(path, buffer, sizeof(buffer)), mode);
+}
+
+int __darwin_chdir(const char* path) {
+  char buffer[PATH_MAX];
+  return chdir(mac_path(path, buffer, sizeof(buffer)));
 }
 
 int __darwin_fclose(__darwin_FILE* fp) {
@@ -782,7 +894,8 @@ int __darwin_open(const char* path, int flags, mode_t mode) {
     abort();
   }
 
-  return open(path, linux_flags, mode);
+  char buffer[PATH_MAX];
+  return open(mac_path(path, buffer, sizeof(buffer)), linux_flags, mode);
 }
 
 static char** add_loader_to_argv(char* argv[]) {
