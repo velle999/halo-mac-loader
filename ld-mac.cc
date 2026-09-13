@@ -1041,6 +1041,17 @@ static void reportClassicFault(int signum, siginfo_t* siginfo,
   } else if (eip < 0x1000) {
     fprintf(stderr, "a call through a NULL function pointer, from %p\n",
             (void*)*(uintptr_t*)esp);
+  } else {
+    // A fault outside the Mac image: name the library and the symbol.
+    Dl_info info;
+    if (dladdr((void*)eip, &info) && info.dli_fname) {
+      fprintf(stderr, "in %s", info.dli_fname);
+      if (info.dli_sname) {
+        fprintf(stderr, " (%s+%#lx)", info.dli_sname,
+                (unsigned long)(eip - (uintptr_t)info.dli_saddr));
+      }
+      fprintf(stderr, "\n");
+    }
   }
   fprintf(stderr,
           "eax %08lx ebx %08lx ecx %08lx edx %08lx\n"
