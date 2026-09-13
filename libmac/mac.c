@@ -474,10 +474,75 @@ int vm_deallocate() {
   return 0;
 }
 
+void cf_trace(const char* fmt, ...);
+
+// The memory the game asked mmap for, for the crash report. Halo maps
+// anonymous memory at addresses it chooses, with MAP_FIXED, which on Linux
+// replaces whatever was there.
+typedef struct {
+  void* want;
+  void* got;
+  size_t length;
+  int prot;
+  int flags;
+} game_mapping;
+
+enum {
+  kGameMappings = 512,
+  kTracedGameMappings = 64,
+};
+
+static game_mapping game_mappings[kGameMappings];
+static int game_mapping_calls;
+static pthread_mutex_t game_mapping_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void record_game_mapping(void* want, void* got, size_t length, int prot,
+                                int flags, int fd) {
+  pthread_mutex_lock(&game_mapping_lock);
+  int call = game_mapping_calls++;
+  if (call < kGameMappings) {
+    game_mappings[call] = (game_mapping){ want, got, length, prot, flags };
+  }
+  pthread_mutex_unlock(&game_mapping_lock);
+  if (got == MAP_FAILED) {
+    fprintf(stderr, "hle: mmap(%p, %zu bytes, prot %d, flags %#x, fd %d) "
+            "failed: %s\n", want, length, prot, flags, fd, strerror(errno));
+  } else if (call < kTracedGameMappings) {
+    cf_trace("mmap(%p, %zu bytes, prot %d, flags %#x, fd %d) = %p", want,
+             length, prot, flags, fd, got);
+  }
+}
+
+// Lists the game's mappings within 16 MB of |fault|, for the crash report.
+void hle_report_game_mappings(uintptr_t fault) {
+  int n = game_mapping_calls < kGameMappings ? game_mapping_calls
+                                             : kGameMappings;
+  fprintf(stderr, "the game called mmap %d times", game_mapping_calls);
+  int shown = 0;
+  for (int i = 0; i < n; i++) {
+    const game_mapping* m = &game_mappings[i];
+    uintptr_t base = (uintptr_t)(m->got == MAP_FAILED ? m->want : m->got);
+    uintptr_t end = base + m->length;
+    if (fault + 0x1000000 < base || fault >= end + 0x1000000) {
+      continue;
+    }
+    if (!shown++) {
+      fprintf(stderr, "; near the fault address:\n");
+    }
+    fprintf(stderr, "  %p, %#zx bytes, prot %d, flags %#x -> %p%s\n",
+            m->want, m->length, m->prot, m->flags, m->got,
+            fault >= base && fault < end ? ", which holds it" : "");
+  }
+  if (!shown) {
+    fprintf(stderr, ", none within 16 MB of the fault address\n");
+  }
+}
+
 void *__darwin_mmap(void *addr, size_t length, int prot, int flags,
                     int fd, off_t offset) {
   LOGF("mmap: addr=%p length=%lu prot=%d flags=%d fd=%d offset=%lld\n",
        addr, (unsigned long)length, prot, flags, fd, (long long)offset);
+  int darwin_flags = flags;
 
   // MAP_ANON is 0x1000 on darwin but 0x20 on linux.
   //
@@ -489,7 +554,9 @@ void *__darwin_mmap(void *addr, size_t length, int prot, int flags,
   // #define MAP_HASSEMAPHORE 0x0200 /* region may contain semaphores */
   // #define MAP_NOCACHE      0x0400 /* don't cache pages for this mapping */
   flags = (flags & 0x1f) | (flags & 0x1000 ? MAP_ANONYMOUS : 0);
-  return mmap(addr, length, prot, flags, fd, offset);
+  void* result = mmap(addr, length, prot, flags, fd, offset);
+  record_game_mapping(addr, result, length, prot, darwin_flags, fd);
+  return result;
 }
 
 // sysctl and sysctlbyname are in hle/sysinfo.c.

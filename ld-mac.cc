@@ -1178,6 +1178,15 @@ static void reportMappings(uintptr_t eip, uintptr_t fault, uintptr_t esp) {
   } else if (fault && findMapping(fault - 1, false, &line, &length)) {
     fprintf(stderr, "the fault address is just past %.*s\n", length, line);
   }
+  // The heap grows up through low addresses, where the game maps memory at
+  // addresses of its own choosing.
+  if (const char* heap = strstr(g_crash_maps, "[heap]")) {
+    const char* start = heap;
+    while (start > g_crash_maps && start[-1] != '\n') {
+      start--;
+    }
+    fprintf(stderr, "the heap is %.*s\n", (int)(heap + 6 - start), start);
+  }
   unsigned long stack_lo, stack_hi;
   if (!findMapping(esp, false, &line, &length) ||
       sscanf(line, "%lx-%lx", &stack_lo, &stack_hi) != 2) {
@@ -1255,6 +1264,12 @@ static void reportClassicFault(int signum, siginfo_t* siginfo,
     ebp = frame[0];
   }
   reportMappings(eip, fault, esp);
+  // libmac keeps a record of the memory the game asked mmap for.
+  void (*report_game_mappings)(uintptr_t) =
+      (void (*)(uintptr_t))dlsym(RTLD_DEFAULT, "hle_report_game_mappings");
+  if (report_game_mappings) {
+    report_game_mappings(fault);
+  }
   _exit(128 + signum);
 }
 #endif
@@ -1471,8 +1486,8 @@ int main(int argc, char* argv[], char* envp[]) {
   // glibc gives memory back to the kernel as soon as a block at the top of
   // the heap, or one it mapped on its own, is freed, more eagerly than Mac
   // OS X's allocator. Halo has faulted in NVIDIA's driver drawing a vertex
-  // array from a heap page no longer mapped. Every block comes from the
-  // heap, and the heap never shrinks.
+  // array from a page no longer mapped. Every block comes from the heap,
+  // and the heap never shrinks.
   mallopt(M_MMAP_MAX, 0);
   mallopt(M_TRIM_THRESHOLD, -1);
 #endif
