@@ -111,6 +111,7 @@ typedef struct hle_gl_context {
   hle_pixel_format* format;
   void* drawable;
   int fullscreen;
+  struct hle_pbuffer* pbuffer;  // the pbuffer it draws in, or NULL
 } hle_gl_context;
 
 typedef struct {
@@ -516,7 +517,13 @@ static hle_gl_context* create_context(hle_pixel_format* f,
   return c;
 }
 
+// Pbuffers, below. A context given a drawable stops drawing in its pbuffer,
+// and a context destroyed takes its framebuffer objects with it.
+static void leave_pbuffer(hle_gl_context* c);
+static void forget_pbuffers_of(hle_gl_context* c);
+
 static void destroy_context(hle_gl_context* c) {
+  forget_pbuffers_of(c);
   if (current == c) {
     make_current(NULL);
   }
@@ -673,6 +680,7 @@ Boolean aglSetDrawable(void* ctx, void* drawable) {
     agl_error = AGL_BAD_CONTEXT;
     return 0;
   }
+  leave_pbuffer(c);
   c->drawable = drawable;
   c->fullscreen = 0;
   if (!drawable) {
@@ -710,6 +718,7 @@ Boolean aglSetFullScreen(void* ctx, int32_t width, int32_t height,
     agl_error = AGL_BAD_CONTEXT;
     return 0;
   }
+  leave_pbuffer(c);
   const char* windowed = getenv("HLE_WINDOWED");
   int fullscreen = !(windowed && *windowed == '1');
   apply_format(c->format);
@@ -805,6 +814,10 @@ void aglSwapBuffers(void* ctx) {
     cf_warn_once("aglSwapBuffers on a context with no drawable");
     return;
   }
+  if (c->pbuffer) {
+    // A pbuffer has one buffer; there is nothing to swap.
+    return;
+  }
   static unsigned swaps;
   static Uint32 traced_at;
   static Uint32 last_swap;
@@ -873,12 +886,207 @@ int32_t aglGetVirtualScreen(void* ctx) {
   return 0;
 }
 
+// ---------------------------------------------------------------------------
+// Pbuffers
+//
+// A pbuffer is a framebuffer object here. aglTexImagePBuffer takes the
+// texture bound to the pbuffer's target as the pbuffer's image, and
+// aglSetPBuffer binds a framebuffer object drawing into that texture, so
+// what the game draws in the pbuffer is at once the texture's image, as on
+// a Mac. Giving the context a drawable, or the full screen, draws in the
+// window again. Halo makes one the size of its screen and three small ones.
+
 enum {
+  kMagicPBuffer = 'pbuf',
   kTracedPBuffers = 8,
+  GL_TEXTURE_2D = 0x0DE1,
+  GL_RGBA = 0x1908,
+  GL_TEXTURE_BINDING_2D = 0x8069,
+  GL_TEXTURE_RECTANGLE_ARB = 0x84F5,
+  GL_TEXTURE_BINDING_RECTANGLE_ARB = 0x84F6,
+  GL_DEPTH24_STENCIL8_EXT = 0x88F0,
+  GL_FRAMEBUFFER_BINDING_EXT = 0x8CA6,
+  GL_FRAMEBUFFER_COMPLETE_EXT = 0x8CD5,
+  GL_COLOR_ATTACHMENT0_EXT = 0x8CE0,
+  GL_DEPTH_ATTACHMENT_EXT = 0x8D00,
+  GL_STENCIL_ATTACHMENT_EXT = 0x8D20,
+  GL_FRAMEBUFFER_EXT = 0x8D40,
+  GL_RENDERBUFFER_EXT = 0x8D41,
 };
 
-// Pbuffers are not here yet; the game is told there is no room for one.
-// What it asks for, and how often it binds one, is traced.
+typedef struct hle_pbuffer {
+  uint32_t magic;
+  int32_t width;
+  int32_t height;
+  uint32_t target;
+  int32_t internal_format;
+  uint32_t texture;  // whose image the pbuffer is
+  int own_texture;  // made here, when the game gave none
+  hle_gl_context* owner;  // the context its framebuffer object is in
+  uint32_t framebuffer;
+  uint32_t depth_stencil;
+  int complete;
+  struct hle_pbuffer* next;
+} hle_pbuffer;
+
+static hle_pbuffer* pbuffers;
+
+static struct {
+  void (*get_integer)(uint32_t, int32_t*);
+  void (*gen_textures)(int32_t, uint32_t*);
+  void (*delete_textures)(int32_t, const uint32_t*);
+  void (*bind_texture)(uint32_t, uint32_t);
+  void (*tex_image_2d)(uint32_t, int32_t, int32_t, int32_t, int32_t, int32_t,
+                       uint32_t, uint32_t, const void*);
+  void (*gen_framebuffers)(int32_t, uint32_t*);
+  void (*delete_framebuffers)(int32_t, const uint32_t*);
+  void (*bind_framebuffer)(uint32_t, uint32_t);
+  void (*framebuffer_texture_2d)(uint32_t, uint32_t, uint32_t, uint32_t,
+                                 int32_t);
+  uint32_t (*check_framebuffer_status)(uint32_t);
+  void (*gen_renderbuffers)(int32_t, uint32_t*);
+  void (*delete_renderbuffers)(int32_t, const uint32_t*);
+  void (*bind_renderbuffer)(uint32_t, uint32_t);
+  void (*renderbuffer_storage)(uint32_t, uint32_t, int32_t, int32_t);
+  void (*framebuffer_renderbuffer)(uint32_t, uint32_t, uint32_t, uint32_t);
+} fbo;
+
+static int resolve_fbo(void) {
+  static int resolved;
+  if (!resolved) {
+    resolved = 1;
+    fbo.get_integer = dlsym(RTLD_DEFAULT, "glGetIntegerv");
+    fbo.gen_textures = dlsym(RTLD_DEFAULT, "glGenTextures");
+    fbo.delete_textures = dlsym(RTLD_DEFAULT, "glDeleteTextures");
+    fbo.bind_texture = dlsym(RTLD_DEFAULT, "glBindTexture");
+    fbo.tex_image_2d = dlsym(RTLD_DEFAULT, "glTexImage2D");
+    fbo.gen_framebuffers = dlsym(RTLD_DEFAULT, "glGenFramebuffersEXT");
+    fbo.delete_framebuffers = dlsym(RTLD_DEFAULT, "glDeleteFramebuffersEXT");
+    fbo.bind_framebuffer = dlsym(RTLD_DEFAULT, "glBindFramebufferEXT");
+    fbo.framebuffer_texture_2d =
+        dlsym(RTLD_DEFAULT, "glFramebufferTexture2DEXT");
+    fbo.check_framebuffer_status =
+        dlsym(RTLD_DEFAULT, "glCheckFramebufferStatusEXT");
+    fbo.gen_renderbuffers = dlsym(RTLD_DEFAULT, "glGenRenderbuffersEXT");
+    fbo.delete_renderbuffers =
+        dlsym(RTLD_DEFAULT, "glDeleteRenderbuffersEXT");
+    fbo.bind_renderbuffer = dlsym(RTLD_DEFAULT, "glBindRenderbufferEXT");
+    fbo.renderbuffer_storage = dlsym(RTLD_DEFAULT, "glRenderbufferStorageEXT");
+    fbo.framebuffer_renderbuffer =
+        dlsym(RTLD_DEFAULT, "glFramebufferRenderbufferEXT");
+  }
+  return fbo.get_integer && fbo.gen_textures && fbo.delete_textures &&
+         fbo.bind_texture && fbo.tex_image_2d && fbo.gen_framebuffers &&
+         fbo.delete_framebuffers && fbo.bind_framebuffer &&
+         fbo.framebuffer_texture_2d && fbo.check_framebuffer_status &&
+         fbo.gen_renderbuffers && fbo.delete_renderbuffers &&
+         fbo.bind_renderbuffer && fbo.renderbuffer_storage &&
+         fbo.framebuffer_renderbuffer;
+}
+
+static hle_pbuffer* pbuffer_of(void* ref) {
+  hle_pbuffer* pb = ref;
+  return pb && pb->magic == kMagicPBuffer ? pb : NULL;
+}
+
+// Makes |c| current for a moment; give_back restores what was.
+static hle_gl_context* borrow(hle_gl_context* c) {
+  hle_gl_context* previous = current;
+  if (previous != c) {
+    make_current(c);
+  }
+  return previous;
+}
+
+static void give_back(hle_gl_context* c, hle_gl_context* previous) {
+  if (previous != c) {
+    make_current(previous);
+  }
+}
+
+static uint32_t binding_of(uint32_t target) {
+  return target == GL_TEXTURE_RECTANGLE_ARB ? GL_TEXTURE_BINDING_RECTANGLE_ARB
+                                            : GL_TEXTURE_BINDING_2D;
+}
+
+// Gives the pbuffer's texture storage of its size, leaving the texture bound
+// to the target as it was. Called with a context current.
+static void size_texture(hle_pbuffer* pb) {
+  int32_t bound = 0;
+  fbo.get_integer(binding_of(pb->target), &bound);
+  fbo.bind_texture(pb->target, pb->texture);
+  fbo.tex_image_2d(pb->target, 0, pb->internal_format, pb->width, pb->height,
+                   0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+  fbo.bind_texture(pb->target, (uint32_t)bound);
+}
+
+// Called with the owner current.
+static void attach_texture(hle_pbuffer* pb) {
+  int32_t bound = 0;
+  fbo.get_integer(GL_FRAMEBUFFER_BINDING_EXT, &bound);
+  fbo.bind_framebuffer(GL_FRAMEBUFFER_EXT, pb->framebuffer);
+  fbo.framebuffer_texture_2d(GL_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT,
+                             pb->target, pb->texture, 0);
+  fbo.bind_framebuffer(GL_FRAMEBUFFER_EXT, (uint32_t)bound);
+}
+
+// Makes the pbuffer's framebuffer object in |c|, drawing into its texture,
+// with a depth and stencil buffer of its size. A framebuffer object belongs
+// to one context; one made in another is left to that context. Called with
+// |c| current.
+static int make_framebuffer(hle_pbuffer* pb, hle_gl_context* c) {
+  if (pb->owner == c && pb->framebuffer) {
+    return pb->complete;
+  }
+  pb->owner = c;
+  fbo.gen_framebuffers(1, &pb->framebuffer);
+  fbo.gen_renderbuffers(1, &pb->depth_stencil);
+  fbo.bind_renderbuffer(GL_RENDERBUFFER_EXT, pb->depth_stencil);
+  fbo.renderbuffer_storage(GL_RENDERBUFFER_EXT, GL_DEPTH24_STENCIL8_EXT,
+                           pb->width, pb->height);
+  fbo.bind_renderbuffer(GL_RENDERBUFFER_EXT, 0);
+  attach_texture(pb);
+  int32_t bound = 0;
+  fbo.get_integer(GL_FRAMEBUFFER_BINDING_EXT, &bound);
+  fbo.bind_framebuffer(GL_FRAMEBUFFER_EXT, pb->framebuffer);
+  fbo.framebuffer_renderbuffer(GL_FRAMEBUFFER_EXT, GL_DEPTH_ATTACHMENT_EXT,
+                               GL_RENDERBUFFER_EXT, pb->depth_stencil);
+  fbo.framebuffer_renderbuffer(GL_FRAMEBUFFER_EXT, GL_STENCIL_ATTACHMENT_EXT,
+                               GL_RENDERBUFFER_EXT, pb->depth_stencil);
+  uint32_t status = fbo.check_framebuffer_status(GL_FRAMEBUFFER_EXT);
+  fbo.bind_framebuffer(GL_FRAMEBUFFER_EXT, (uint32_t)bound);
+  pb->complete = status == GL_FRAMEBUFFER_COMPLETE_EXT;
+  if (!pb->complete) {
+    fprintf(stderr, "hle: a %dx%d pbuffer's framebuffer object is "
+            "incomplete (%#x)\n", pb->width, pb->height, (unsigned)status);
+  } else {
+    cf_trace("aglSetPBuffer: a %dx%d framebuffer object draws into texture "
+             "%u", pb->width, pb->height, pb->texture);
+  }
+  return pb->complete;
+}
+
+static void leave_pbuffer(hle_gl_context* c) {
+  if (!c->pbuffer) {
+    return;
+  }
+  hle_gl_context* previous = borrow(c);
+  fbo.bind_framebuffer(GL_FRAMEBUFFER_EXT, 0);
+  give_back(c, previous);
+  c->pbuffer = NULL;
+}
+
+static void forget_pbuffers_of(hle_gl_context* c) {
+  for (hle_pbuffer* pb = pbuffers; pb; pb = pb->next) {
+    if (pb->owner == c) {
+      pb->owner = NULL;
+      pb->framebuffer = 0;
+      pb->depth_stencil = 0;
+      pb->complete = 0;
+    }
+  }
+}
+
 Boolean aglCreatePBuffer(int32_t width, int32_t height, uint32_t target,
                          uint32_t internal_format, int32_t max_level,
                          void** pbuffer) {
@@ -889,15 +1097,62 @@ Boolean aglCreatePBuffer(int32_t width, int32_t height, uint32_t target,
              width, height, (unsigned)target, (unsigned)internal_format,
              max_level);
   }
-  cf_warn_once("aglCreatePBuffer: pbuffers are not supported");
   if (pbuffer) {
     *pbuffer = NULL;
   }
-  agl_error = AGL_BAD_ALLOC;
-  return 0;
+  if (!pbuffer || width <= 0 || height <= 0 ||
+      (target != GL_TEXTURE_2D && target != GL_TEXTURE_RECTANGLE_ARB)) {
+    agl_error = AGL_BAD_VALUE;
+    return 0;
+  }
+  if (!resolve_fbo()) {
+    cf_warn_once("aglCreatePBuffer: OpenGL has no framebuffer objects");
+    agl_error = AGL_BAD_ALLOC;
+    return 0;
+  }
+  hle_pbuffer* pb = calloc(1, sizeof(*pb));
+  pb->magic = kMagicPBuffer;
+  pb->width = width;
+  pb->height = height;
+  pb->target = target;
+  pb->internal_format = (int32_t)internal_format;
+  pb->next = pbuffers;
+  pbuffers = pb;
+  *pbuffer = pb;
+  return 1;
 }
 
 Boolean aglDestroyPBuffer(void* pbuffer) {
+  hle_pbuffer* pb = pbuffer_of(pbuffer);
+  if (!pb) {
+    agl_error = AGL_BAD_VALUE;
+    return 0;
+  }
+  hle_gl_context* owner = pb->owner;
+  if (owner) {
+    if (owner->pbuffer == pb) {
+      leave_pbuffer(owner);
+    }
+    hle_gl_context* previous = borrow(owner);
+    if (pb->framebuffer) {
+      fbo.delete_framebuffers(1, &pb->framebuffer);
+    }
+    if (pb->depth_stencil) {
+      fbo.delete_renderbuffers(1, &pb->depth_stencil);
+    }
+    if (pb->own_texture && pb->texture) {
+      fbo.delete_textures(1, &pb->texture);
+    }
+    give_back(owner, previous);
+  }
+  for (hle_pbuffer** link = &pbuffers; *link; link = &(*link)->next) {
+    if (*link == pb) {
+      *link = pb->next;
+      break;
+    }
+  }
+  pb->magic = 0;
+  free(pb);
   return 1;
 }
 
@@ -908,8 +1163,27 @@ Boolean aglSetPBuffer(void* ctx, void* pbuffer, int32_t face, int32_t level,
     cf_trace("aglSetPBuffer(%p, face %d, level %d): call %u", pbuffer, face,
              level, calls);
   }
-  agl_error = AGL_BAD_VALUE;
-  return 0;
+  hle_gl_context* c = context_of(ctx);
+  hle_pbuffer* pb = pbuffer_of(pbuffer);
+  if (!c || !pb) {
+    agl_error = c ? AGL_BAD_VALUE : AGL_BAD_CONTEXT;
+    return 0;
+  }
+  hle_gl_context* previous = borrow(c);
+  if (!pb->texture) {
+    fbo.gen_textures(1, &pb->texture);
+    pb->own_texture = 1;
+    size_texture(pb);
+  }
+  int ok = make_framebuffer(pb, c);
+  fbo.bind_framebuffer(GL_FRAMEBUFFER_EXT, ok ? pb->framebuffer : 0);
+  c->pbuffer = ok ? pb : NULL;
+  give_back(c, previous);
+  if (!ok) {
+    agl_error = AGL_BAD_ALLOC;
+    return 0;
+  }
+  return 1;
 }
 
 Boolean aglTexImagePBuffer(void* ctx, void* pbuffer, int32_t source) {
@@ -918,8 +1192,28 @@ Boolean aglTexImagePBuffer(void* ctx, void* pbuffer, int32_t source) {
     cf_trace("aglTexImagePBuffer(%p, source %#x): call %u", pbuffer,
              (unsigned)source, calls);
   }
-  agl_error = AGL_BAD_VALUE;
-  return 0;
+  hle_gl_context* c = context_of(ctx);
+  hle_pbuffer* pb = pbuffer_of(pbuffer);
+  if (!c || !pb) {
+    agl_error = c ? AGL_BAD_VALUE : AGL_BAD_CONTEXT;
+    return 0;
+  }
+  hle_gl_context* previous = borrow(c);
+  int32_t bound = 0;
+  fbo.get_integer(binding_of(pb->target), &bound);
+  if (bound && (uint32_t)bound != pb->texture) {
+    if (pb->own_texture && pb->texture) {
+      fbo.delete_textures(1, &pb->texture);
+    }
+    pb->texture = (uint32_t)bound;
+    pb->own_texture = 0;
+    size_texture(pb);
+    if (pb->owner == c && pb->framebuffer) {
+      attach_texture(pb);
+    }
+  }
+  give_back(c, previous);
+  return 1;
 }
 
 // ---------------------------------------------------------------------------

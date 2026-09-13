@@ -19,8 +19,9 @@ probe, video memory, disk space), finds its disc, shows its EULA and asks for
 its product key, which are answered without being shown (see
 Configuration), loads its maps and shaders, and draws its main menu, with
 its music: 30 frames a second in an 800x600 window on a Pentium 4 with a
-GeForce 7600 GS and NVIDIA's 304 driver. Playing has not been tried yet.
-The intro movies and pbuffers are not implemented.
+GeForce 7600 GS and NVIDIA's 304 driver. Its campaign has been played there
+for an hour at a stretch, and its time demo runs at 31 to 59 frames a
+second. The intro movies are not implemented.
 
 An import with no implementation is bound to a guard page, so its first use
 stops the program with its name, its caller and the registers.
@@ -124,8 +125,10 @@ bundles and localized strings, preferences, UUIDs and character sets.
   `aglMacro.h` calls through a context's dispatch table, which holds thunks
   generated from the 10.4 SDK's `gliDispatch.h` by `tools/gen_gl_dispatch.py`;
   the game's direct `gl` imports bind to the system's libGL. The renderer
-  described is one accelerated NVIDIA renderer. Pbuffers are not supported
-  yet.
+  described is one accelerated NVIDIA renderer.
+- AGL pbuffers are framebuffer objects: the texture `aglTexImagePBuffer`
+  names is the pbuffer's image, and `aglSetPBuffer` draws into it. Without
+  them Halo drew a 128x128 effect texture into a corner of the screen.
 - The game copies `GL_EXTENSIONS` into a 4096-byte buffer, which a newer
   driver's list overruns, so it sees only the extensions whose names its
   executable contains, plus `GL_EXT_texture_rectangle` where the driver has
