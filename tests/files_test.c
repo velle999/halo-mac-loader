@@ -110,8 +110,25 @@ static void test_folders(void) {
   FSRefMakePath(&folder, path, sizeof(path));
   check(strstr((char*)path, "/System/Library/Frameworks") != NULL,
         "Frameworks is under the root");
-  check(FSFindFolder(kUserDomain, 'docs', 0, &folder) == fnfErr,
-        "FSFindFolder without create: fnfErr");
+  // Every Mac has Documents; Halo looks for it without asking for it to be
+  // made, and saves its profiles there.
+  check(FSFindFolder(kUserDomain, 'docs', 0, &folder) == noErr,
+        "FSFindFolder without create finds Documents, which every Mac has");
+  FSRefMakePath(&folder, path, sizeof(path));
+  struct stat st;
+  check(strstr((char*)path, "/Documents") != NULL &&
+            stat((char*)path, &st) == 0 && S_ISDIR(st.st_mode),
+        "Documents is made under the home");
+  check(FSFindFolder(kLocalDomain, 'sdat', 0, &folder) == noErr,
+        "FSFindFolder: the shared data folder");
+  FSRefMakePath(&folder, path, sizeof(path));
+  check(strstr((char*)path, "/Users/Shared") != NULL,
+        "the shared data folder is Users/Shared");
+  check(FSFindFolder(kUserDomain, 'apps', 0, &folder) == fnfErr,
+        "FSFindFolder without create: fnfErr for a folder a Mac may lack");
+  char apps[1024];
+  snprintf(apps, sizeof(apps), "%s/Applications", getenv("HALO_MAC_HOME"));
+  check(stat(apps, &st) != 0, "and that folder is not made");
 }
 
 static void test_catalog_and_forks(const char* dir) {

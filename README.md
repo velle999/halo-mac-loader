@@ -105,7 +105,8 @@ bundles and localized strings, preferences, UUIDs and character sets.
   directory and `/Volumes/Macintosh HD` as /.
 - Folders a Mac keeps in the home, such as Preferences and Application
   Support, are under `~/.local/share/halo-mac-loader/home`. System folders are
-  under `~/.local/share/halo-mac-loader/root`.
+  under `~/.local/share/halo-mac-loader/root`. A folder every Mac has, such as
+  Documents, is made the first time a program looks it up.
 - Resource forks come from AppleDouble companion files (`._name`). The game's
   `EULA.rsrc` keeps its resources that way, so extract the `._` files along
   with the rest of the application.

@@ -347,45 +347,55 @@ enum {
   UNDER_ROOT,
 };
 
+// Whether a stock Mac OS X 10.4 install has the folder. One it always has is
+// made the first time it is looked up, whatever the caller asks; one it may
+// not have is made only when the caller asks for that.
+enum {
+  MAYBE_MISSING,
+  ALWAYS_THERE,
+};
+
 typedef struct {
   OSType type;
   int base;
   const char* relative;
+  int presence;
 } folder;
 
 static const folder kUserFolders[] = {
-  { 'pref', UNDER_HOME, "Library/Preferences" },
-  { 'asup', UNDER_HOME, "Library/Application Support" },
-  { 'docs', UNDER_HOME, "Documents" },
-  { 'desk', UNDER_HOME, "Desktop" },
-  { 'cusr', UNDER_HOME, "" },
-  { 'dlib', UNDER_HOME, "Library" },
-  { 'fram', UNDER_HOME, "Library/Frameworks" },
-  { 'font', UNDER_HOME, "Library/Fonts" },
-  { 'trsh', UNDER_HOME, ".Trash" },
-  { 'apps', UNDER_HOME, "Applications" },
-  { 'temp', UNDER_ROOT, "tmp" },
-  { 'flnt', UNDER_ROOT, "tmp/Cleanup At Startup" },
+  { 'pref', UNDER_HOME, "Library/Preferences", ALWAYS_THERE },
+  { 'asup', UNDER_HOME, "Library/Application Support", ALWAYS_THERE },
+  { 'docs', UNDER_HOME, "Documents", ALWAYS_THERE },
+  { 'desk', UNDER_HOME, "Desktop", ALWAYS_THERE },
+  { 'cusr', UNDER_HOME, "", ALWAYS_THERE },
+  { 'dlib', UNDER_HOME, "Library", ALWAYS_THERE },
+  { 'fram', UNDER_HOME, "Library/Frameworks", MAYBE_MISSING },
+  { 'font', UNDER_HOME, "Library/Fonts", ALWAYS_THERE },
+  { 'trsh', UNDER_HOME, ".Trash", MAYBE_MISSING },
+  { 'apps', UNDER_HOME, "Applications", MAYBE_MISSING },
+  { 'temp', UNDER_ROOT, "tmp", ALWAYS_THERE },
+  { 'flnt', UNDER_ROOT, "tmp/Cleanup At Startup", MAYBE_MISSING },
 };
 
 static const folder kLocalFolders[] = {
-  { 'pref', UNDER_ROOT, "Library/Preferences" },
-  { 'asup', UNDER_ROOT, "Library/Application Support" },
-  { 'dlib', UNDER_ROOT, "Library" },
-  { 'fram', UNDER_ROOT, "Library/Frameworks" },
-  { 'font', UNDER_ROOT, "Library/Fonts" },
-  { 'apps', UNDER_ROOT, "Applications" },
-  { 'usrs', UNDER_ROOT, "Users" },
-  { 'temp', UNDER_ROOT, "tmp" },
+  { 'pref', UNDER_ROOT, "Library/Preferences", ALWAYS_THERE },
+  { 'asup', UNDER_ROOT, "Library/Application Support", ALWAYS_THERE },
+  { 'dlib', UNDER_ROOT, "Library", ALWAYS_THERE },
+  { 'fram', UNDER_ROOT, "Library/Frameworks", ALWAYS_THERE },
+  { 'font', UNDER_ROOT, "Library/Fonts", ALWAYS_THERE },
+  { 'apps', UNDER_ROOT, "Applications", ALWAYS_THERE },
+  { 'usrs', UNDER_ROOT, "Users", ALWAYS_THERE },
+  { 'sdat', UNDER_ROOT, "Users/Shared", ALWAYS_THERE },
+  { 'temp', UNDER_ROOT, "tmp", ALWAYS_THERE },
 };
 
 static const folder kSystemFolders[] = {
-  { 'macs', UNDER_ROOT, "System" },
-  { 'dlib', UNDER_ROOT, "System/Library" },
-  { 'fram', UNDER_ROOT, "System/Library/Frameworks" },
-  { 'font', UNDER_ROOT, "System/Library/Fonts" },
-  { 'pref', UNDER_ROOT, "System/Library/Preferences" },
-  { 'temp', UNDER_ROOT, "tmp" },
+  { 'macs', UNDER_ROOT, "System", ALWAYS_THERE },
+  { 'dlib', UNDER_ROOT, "System/Library", ALWAYS_THERE },
+  { 'fram', UNDER_ROOT, "System/Library/Frameworks", ALWAYS_THERE },
+  { 'font', UNDER_ROOT, "System/Library/Fonts", ALWAYS_THERE },
+  { 'pref', UNDER_ROOT, "System/Library/Preferences", ALWAYS_THERE },
+  { 'temp', UNDER_ROOT, "tmp", ALWAYS_THERE },
 };
 
 static const folder* find_folder(const folder* table, size_t n, OSType type) {
@@ -399,7 +409,8 @@ static const folder* find_folder(const folder* table, size_t n, OSType type) {
 
 #define FOLDERS(table) (table), sizeof(table) / sizeof((table)[0])
 
-static OSErr folder_path(SInt16 vref, OSType type, char* out, size_t size) {
+static OSErr folder_path(SInt16 vref, OSType type, char* out, size_t size,
+                         int* always_there) {
   const folder* f = NULL;
   switch (vref) {
     case kUserDomain:
@@ -431,6 +442,7 @@ static OSErr folder_path(SInt16 vref, OSType type, char* out, size_t size) {
     fprintf(stderr, "hle: not implemented yet: %s\n", what);
     return fnfErr;
   }
+  *always_there = f->presence == ALWAYS_THERE;
   const char* base = f->base == UNDER_HOME ? hle_mac_home() : hle_mac_root();
   int n = snprintf(out, size, "%s%s%s", base, *f->relative ? "/" : "",
                    f->relative);
@@ -439,12 +451,16 @@ static OSErr folder_path(SInt16 vref, OSType type, char* out, size_t size) {
 
 static OSErr find_folder_path(SInt16 vref, OSType type, unsigned int create,
                               char* path, size_t size) {
-  OSErr err = folder_path(vref, type, path, size);
+  int always_there = 0;
+  OSErr err = folder_path(vref, type, path, size, &always_there);
   if (err) {
     return err;
   }
   if (access(path, F_OK) != 0) {
-    if (!(create & 0xff)) {
+    if (!always_there && !(create & 0xff)) {
+      cf_trace("FSFindFolder('%c%c%c%c', %d): %s does not exist",
+               (int)(type >> 24) & 0xff, (int)(type >> 16) & 0xff,
+               (int)(type >> 8) & 0xff, (int)type & 0xff, vref, path);
       return fnfErr;
     }
     if (!hle_mkdirs(path)) {
