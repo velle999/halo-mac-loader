@@ -12,14 +12,16 @@ you need your own copy.
 
 ## Status
 
-Work in progress. The executable loads, its imports bind, and its C++ static
-initializers run. The CoreFoundation it imports is implemented in `hle/`.
-Imports with no implementation yet are bound to guard pages, so the first one
-the game uses stops it with its name. Today that is the Carbon File Manager:
+Work in progress. The executable loads, its imports bind, all 36 of its C++
+static initializers run, and `main` starts. `hle/` implements the
+CoreFoundation it imports, Carbon's File, Resource and Memory Managers, dates
+and clocks, and Gestalt. Imports with no implementation yet are bound to guard
+pages, so the first one the game uses stops it with its name. Today that is
+the first window call, in the game's application setup:
 
-    UNIMPLEMENTED: FSFindFolder called from 0x2a6421
+    UNIMPLEMENTED: CreateWindowGroup called from 0x2a9c2a
 
-The rest of Carbon, AGL and OpenGL, input and audio follow.
+Carbon's windows, menus and events, AGL and OpenGL, input and audio follow.
 
 ## Requirements
 
@@ -52,11 +54,32 @@ bundles and localized strings, preferences, UUIDs and character sets.
 - `make tests/cf_test && tests/cf_test /path/to/Halo.app` checks it,
   including against the game's own bundle.
 
+## Carbon
+
+- The File Manager puts the Mac's one volume at /. FSRefs, FSSpecs with
+  classic partial pathnames, catalog information, directory iteration, forks
+  and the parameter-block calls the game uses are implemented. Carbon keeps
+  68K structure alignment on Intel; `hle/carbon.h` asserts it against offsets
+  read from the game's code.
+- Folders a Mac keeps in the home, such as Preferences and Application
+  Support, are under `~/.local/share/halo-mac-loader/home`. System folders are
+  under `~/.local/share/halo-mac-loader/root`.
+- Resource forks come from AppleDouble companion files (`._name`). The game's
+  `EULA.rsrc` keeps its resources that way, so extract the `._` files along
+  with the rest of the application.
+- The Resource Manager reads those forks, and the Memory Manager provides
+  pointers and handles. Dates, clocks and the Gestalt selectors the game asks
+  for are answered.
+- `make tests/files_test && tests/files_test /path/to/Halo.app` checks it.
+
 ## Changes from maloader
 
 - Pre-10.5 i386 images: `__IMPORT,__jump_table` stubs, external relocations,
   LOCAL and ABSOLUTE indirect symbols, and a Darwin initial stack with `envp`
   and `apple[]`.
+- An undefined symbol marked `N_REF_TO_WEAK` binds to the library that defines
+  it. The bit is `N_WEAK_DEF` on a defined symbol; taking it for that bound
+  `operator new` and `delete` to address 0.
 - `libmac` additions for 10.4-era executables: `__sF`, keymgr, the `errno`
   variable, `bootstrap_port`, a monotonic `mach_absolute_time`.
 - An unimplemented import stops the program with its name, its caller, the

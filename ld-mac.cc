@@ -1050,6 +1050,9 @@ static void reportClassicFault(int signum, siginfo_t* siginfo,
             (unsigned long)((fault - (uintptr_t)g_undefined_base) %
                             kUndefinedSlot),
             (void*)eip);
+  } else if (eip < 0x1000) {
+    fprintf(stderr, "a call through a NULL function pointer, from %p\n",
+            (void*)*(uintptr_t*)esp);
   }
   fprintf(stderr,
           "eax %08lx ebx %08lx ecx %08lx edx %08lx\n"

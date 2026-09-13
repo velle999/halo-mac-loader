@@ -75,6 +75,9 @@ struct nlist {
 };
 
 #define N_WEAK_DEF      0x0080
+// n_type & N_TYPE_MASK == N_SECT_TYPE: defined in a section of this image.
+#define N_TYPE_MASK     0x0e
+#define N_SECT_TYPE     0x0e
 
 // See mach-o/reloc.h, which include/ does not vendor.
 struct macho_relocation_info {
@@ -162,7 +165,11 @@ class MachOImpl : public MachO {
       bind->value = is64_ ? sym->n_value : (uint32_t)sym->n_value;
       bind->type = type;
       bind->ordinal = 1;
-      bind->is_weak = ((sym->n_desc & N_WEAK_DEF) != 0);
+      // For a symbol the image defines, 0x80 in n_desc is N_WEAK_DEF. For
+      // an undefined one the same bit is N_REF_TO_WEAK, and the definition
+      // is in a library; binding that to its zero n_value made a NULL call.
+      bind->is_weak = (sym->n_desc & N_WEAK_DEF) != 0 &&
+                      (sym->n_type & N_TYPE_MASK) == N_SECT_TYPE;
       bind->is_classic = true;
       LOGF("add classic bind! %s type=%d sect=%d desc=%d value=%lld "
            "vmaddr=%p is_weak=%d\n",
