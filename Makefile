@@ -107,6 +107,9 @@ tests/files_test: tests/files_test.c libmac.so hle/carbon.h
 tests/crypto_test: tests/crypto_test.c tests/crypto_vectors.h hle/crypto.c
 	$(CC) $(CFLAGS) -Itests -o $@ tests/crypto_test.c hle/crypto.c
 
+tests/arb_test: tests/arb_test.c hle/arb_program.c hle/arb_program.h
+	$(CC) $(CFLAGS) -o $@ tests/arb_test.c hle/arb_program.c
+
 dist:
 	cd /tmp && rm -fr maloader-$(VERSION) && git clone git@github.com:shinh/maloader.git && rm -fr maloader/.git && mv maloader maloader-$(VERSION) && tar -cvzf maloader-$(VERSION).tar.gz maloader-$(VERSION)
 

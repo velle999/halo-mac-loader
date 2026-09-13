@@ -28,3 +28,4 @@ build.log
 tests/cf_test
 tests/files_test
 tests/crypto_test
+tests/arb_test

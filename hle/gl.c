@@ -24,6 +24,7 @@
 
 #include <SDL2/SDL.h>
 
+#include "arb_program.h"
 #include "gl_dispatch.h"
 #include "gui.h"
 
@@ -229,9 +230,70 @@ const uint8_t* __darwin_glGetString(uint32_t name) {
   return s;
 }
 
+enum {
+  GL_PROGRAM_ERROR_POSITION_ARB = 0x864B,
+  GL_PROGRAM_ERROR_STRING_ARB = 0x8874,
+  kMaxProgramReports = 20,
+};
+
+// The game's glProgramStringARB, through rename.tab and the dispatch table.
+// Its programs get arb_program.c's ALIAS rewrite, and a program the driver
+// still refuses is reported with the driver's message. The error position
+// is read rather than glGetError, which would take the error from the game.
+void __darwin_glProgramStringARB(uint32_t target, uint32_t format,
+                                 int32_t length, const void* program) {
+  static void (*real_program_string)(uint32_t, uint32_t, int32_t,
+                                     const void*);
+  static void (*get_integer)(uint32_t, int32_t*);
+  static const uint8_t* (*get_string)(uint32_t);
+  static int reports;
+  static int rewrote;
+  if (!real_program_string) {
+    real_program_string = dlsym(RTLD_DEFAULT, "glProgramStringARB");
+    get_integer = dlsym(RTLD_DEFAULT, "glGetIntegerv");
+    get_string = dlsym(RTLD_DEFAULT, "glGetString");
+  }
+  if (!real_program_string) {
+    return;
+  }
+  char* rewritten = program ? hle_arb_rewrite_aliases(program, &length)
+                            : NULL;
+  if (rewritten && !rewrote) {
+    rewrote = 1;
+    cf_trace("glProgramStringARB: ALIAS of a result or vertex binding is "
+             "declared as OUTPUT or ATTRIB");
+  }
+  const char* text = rewritten ? rewritten : program;
+  real_program_string(target, format, length, text);
+  if (get_integer && reports < kMaxProgramReports) {
+    int32_t position = -1;
+    get_integer(GL_PROGRAM_ERROR_POSITION_ARB, &position);
+    if (position != -1) {
+      reports++;
+      const char* message =
+          get_string ? (const char*)get_string(GL_PROGRAM_ERROR_STRING_ARB)
+                     : NULL;
+      char context[80];
+      int n = 0;
+      for (int32_t i = position; text && i < length && n < 79 &&
+           text[i] != '\n'; i++) {
+        context[n++] = text[i];
+      }
+      context[n] = '\0';
+      fprintf(stderr, "hle: glProgramStringARB(%#x) refused at %d: %s\n"
+              "hle:   there: %s\n", (unsigned)target, position,
+              message ? message : "", context);
+    }
+  }
+  free(rewritten);
+}
+
 static void* lookup_gl(const char* name) {
   if (!strcmp(name, "glGetString")) {
     return __darwin_glGetString;
+  }
+  if (!strcmp(name, "glProgramStringARB")) {
+    return __darwin_glProgramStringARB;
   }
   return dlsym(RTLD_DEFAULT, name);
 }
