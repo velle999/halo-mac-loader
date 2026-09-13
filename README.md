@@ -1,31 +1,33 @@
-# halo-mac-loader
+# maloader-carbon
 
-A fork of [maloader](https://github.com/shinh/maloader) aimed at one program:
-the Intel (i386) build of *Halo: Combat Evolved* for Mac OS X (Halo Universal
-2.0, Westlake Interactive and MacSoft, 2006), running natively on 32-bit x86
-Linux with its own OpenGL renderer.
+A fork of [maloader](https://github.com/shinh/maloader) that runs Carbon
+applications built for Mac OS X on Intel, starting with one: the i386 build
+of *Halo: Combat Evolved* (Halo Universal 2.0, Westlake Interactive and
+MacSoft, 2006), running natively on 32-bit x86 Linux with its own OpenGL
+renderer.
 
 The loader maps the Mac executable into memory, binds its imports and starts
 it. Where Mac OS X would supply CoreFoundation, Carbon, AGL or IOKit, this
-project supplies the calls the game makes. No part of the game is included;
-you need your own copy.
+project supplies the calls the game makes, over glibc, SDL 2 and the
+system's OpenGL. No part of the game is included; you need your own copy.
 
 ## Status
 
-Work in progress. The executable loads, its imports bind, all 36 of its C++
-static initializers run, and `main` starts. `hle/` implements the
-CoreFoundation it imports, Carbon's File, Resource and Memory Managers, dates
-and clocks, and Gestalt. Imports with no implementation yet are bound to guard
-pages, so the first one the game uses stops it with its name. Today that is
-the first window call, in the game's application setup:
+Work in progress. Every one of the game's 724 imports binds. It runs its
+startup checks (CPU, memory, QuickTime and OpenGL versions, an OpenGL context
+probe, video memory, disk space), finds its disc, shows its EULA, which is
+answered for the user (see Configuration), and asks for its product key.
+Nothing has been rendered yet: the game's own window, its main loop and
+sound come next.
 
-    UNIMPLEMENTED: CreateWindowGroup called from 0x2a9c2a
-
-Carbon's windows, menus and events, AGL and OpenGL, input and audio follow.
+An import with no implementation is bound to a guard page, so its first use
+stops the program with its name, its caller and the registers.
 
 ## Requirements
 
 - 32-bit x86 Linux with glibc. The game's i386 code needs SSE2.
+- SDL 2 (`libSDL2-2.0.so.0`) and an OpenGL driver (`libGL.so.1`). SDL's
+  headers are in `third_party/`, so only the libraries are needed.
 - `vm.mmap_min_addr` of 4096 or lower. Mac OS X i386 executables are not
   position-independent, and their `__TEXT` segment starts at 0x1000:
 
@@ -35,10 +37,35 @@ Carbon's windows, menus and events, AGL and OpenGL, input and audio follow.
 
     make ld-mac libmac.so
     cd /path/to/Halo.app/Contents/MacOS
-    /path/to/halo-mac-loader/ld-mac ./Halo
+    HLE_CD_PATH="/path/to/Halo Universal" /path/to/maloader-carbon/ld-mac ./Halo
 
 `ld-mac` is linked `-no-pie`. A 32-bit kernel loads position-independent
 executables at 0x400000, which is inside the game's image.
+
+## Configuration
+
+- `HLE_CD_PATH`: the game checks that its disc is in the drive. Point this
+  at a directory with the disc's contents, such as the disc image extracted.
+  It appears as a mounted CD named after the directory (the Mac release's is
+  `Halo Universal`), or after `HLE_CD_NAME` when that is set.
+- `HLE_WINDOWED=1` plays in a window rather than changing the screen's mode,
+  and ticks the game's own "Play in a window" setting.
+- `HLE_VRAM_MB` is the video memory the renderer reports, 256 by default.
+- Dialogs are answered without being shown. When the game runs a dialog
+  from its NIB, `HLE_CONTROL_<code>=<value>` first sets the control with that
+  four-letter signature (`HLE_CONTROL_FSAA=2` picks the second FSAA setting),
+  then the default button's command is sent, or the one `HLE_DIALOG_<name>`
+  gives (`HLE_DIALOG_EULA=not!` declines the licence). stderr says what was
+  chosen. Alerts print their text and take their default button.
+- Classic dialogs from `DLOG` resources are answered the same way:
+  `HLE_DIALOG_<id>` fills their text fields, split at dashes, and their first
+  button is hit; without it, or when the game refuses the text, their second
+  button (Cancel or Quit) is. The game asks for its product key, printed on
+  the back of the Halo manual, in `DLOG` 10001 (10002 in German, 10003 in
+  French): `HLE_DIALOG_10001=XXXXX-XXXXX-XXXXX-XXXXX`. The game saves a key it
+  accepts with its preferences.
+- `HLE_TRACE=1` logs lookups and decisions, and `LD_MAC_LIST_UNDEFINED=1`
+  lists the imports with no implementation.
 
 ## CoreFoundation
 
@@ -72,6 +99,37 @@ bundles and localized strings, preferences, UUIDs and character sets.
   for are answered.
 - `make tests/files_test && tests/files_test /path/to/Halo.app` checks it.
 
+## Windows, graphics, input and sound
+
+- CGL and AGL contexts are SDL OpenGL contexts. Code built with
+  `aglMacro.h` calls through a context's dispatch table, which holds thunks
+  generated from the 10.4 SDK's `gliDispatch.h` by `tools/gen_gl_dispatch.py`;
+  the game's direct `gl` imports bind to the system's libGL. The renderer
+  described is one accelerated NVIDIA renderer. Pbuffers are not supported
+  yet.
+- Displays, their modes and the main GDevice describe SDL's display 0. A mode
+  switch resizes the game's window, and a window covering a captured display
+  goes full screen unless `HLE_WINDOWED` is set. Gamma tables are recorded,
+  not applied.
+- Windows, controls and menus come from the application's NIB
+  (`objects.xib`) and are kept as records the game queries; only a window the
+  game draws in with OpenGL is real. The Carbon Event Manager, window groups,
+  the Process Manager and Multiprocessing Services are implemented. SDL input
+  arrives as Carbon keyboard and mouse events with Mac key codes, and while
+  the game hides the cursor the pointer is held in relative mode.
+- QuickDraw keeps ports, GWorlds with real pixels, colors and rectangles.
+- Sound Manager channels keep time but are silent. QuickTime reports no
+  movies, so the intro is skipped. IOKit shows the disc and no HID devices.
+
+## Tools
+
+- `tools/asm_annotate.py BINARY DISASSEMBLY LO HI` prints part of an
+  `llvm-objdump --macho -d` listing with the C strings, CFStrings and
+  four-character codes its constants name.
+- `tools/import_walk.py DISASSEMBLY ADDR [DEPTH] [IMPLEMENTED]` lists the
+  imports a function reaches, in the order a walk meets them, marking the
+  ones with no implementation.
+
 ## Changes from maloader
 
 - Pre-10.5 i386 images: `__IMPORT,__jump_table` stubs, external relocations,
@@ -84,6 +142,8 @@ bundles and localized strings, preferences, UUIDs and character sets.
   variable, `bootstrap_port`, a monotonic `mach_absolute_time`.
 - An unimplemented import stops the program with its name, its caller, the
   registers and the frame-pointer chain.
+- `sysctl` and `sysctlbyname` answer as a 10.4.9 Intel Mac with this
+  machine's CPU and memory; maloader's `sysctl` aborted on most queries.
 - Lookups the program makes at run time, through
   `CFBundleGetFunctionPointerForName` or `dlsym`, resolve the way its imports
   do. `dlopen` of a Mac library that is not present as a Mach-O file returns
