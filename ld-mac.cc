@@ -269,6 +269,110 @@ static void writeJump(uintptr_t at, uintptr_t target) {
   memcpy(p + 1, &rel, sizeof(rel));
 }
 
+#ifndef __x86_64__
+// LD_MAC_TRACE_IMPORTS=1 logs each import the first time the image calls it
+// through its jump table, with the caller; LD_MAC_TRACE_IMPORTS=all logs
+// every call. A traced import's jump goes to a stub that pushes the import's
+// index and enters a common routine, which saves the registers and flags,
+// logs, restores them, and returns into the import with the stack as the
+// caller left it.
+static const size_t kTraceCapacity = 8192;
+static const char* g_trace_mode;
+static const char** g_trace_names;
+static uintptr_t* g_trace_targets;
+static unsigned char* g_trace_seen;
+static unsigned char* g_trace_code;
+static size_t g_trace_count;
+static size_t g_trace_offset;
+
+__attribute__((force_align_arg_pointer))
+static void traceImport(uintptr_t index, uintptr_t caller) {
+  static unsigned long calls;
+  calls++;
+  if (strcmp(g_trace_mode, "all") != 0) {
+    if (g_trace_seen[index]) {
+      return;
+    }
+    g_trace_seen[index] = 1;
+  }
+  fprintf(stderr, "import %lu: %s from %p\n", calls, g_trace_names[index],
+          (void*)caller);
+}
+
+static void emitTrace(const unsigned char* bytes, size_t n) {
+  memcpy(g_trace_code + g_trace_offset, bytes, n);
+  g_trace_offset += n;
+}
+
+static void emitTrace32(uint32_t value) {
+  memcpy(g_trace_code + g_trace_offset, &value, sizeof(value));
+  g_trace_offset += sizeof(value);
+}
+
+// What an import's jump should reach: |target| itself, or when tracing, a
+// stub that logs on the way to it.
+static uintptr_t traceTarget(const string& name, uintptr_t target) {
+  if (!g_trace_mode) {
+    const char* mode = getenv("LD_MAC_TRACE_IMPORTS");
+    g_trace_mode = mode && *mode ? mode : "";
+  }
+  if (!*g_trace_mode || undefinedSymbolAt(target) ||
+      g_trace_count == kTraceCapacity) {
+    return target;
+  }
+  if (!g_trace_code) {
+    size_t size = 128 + kTraceCapacity * 10;
+    g_trace_code = (unsigned char*)mmap(NULL, size,
+                                        PROT_READ | PROT_WRITE | PROT_EXEC,
+                                        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (g_trace_code == MAP_FAILED) {
+      err(1, "mmap(import trace)");
+    }
+    g_trace_names = new const char*[kTraceCapacity];
+    g_trace_targets = new uintptr_t[kTraceCapacity];
+    g_trace_seen = new unsigned char[kTraceCapacity]();
+    static const unsigned char kSave[] = {
+      0x9c,                    // pushfl
+      0x60,                    // pushal
+      0x8b, 0x4c, 0x24, 0x28,  // movl 0x28(%esp), %ecx: the caller
+      0x51,                    // pushl %ecx
+      0x8b, 0x44, 0x24, 0x28,  // movl 0x28(%esp), %eax: the index
+      0x50,                    // pushl %eax
+      0xb8,                    // movl $traceImport, %eax
+    };
+    emitTrace(kSave, sizeof(kSave));
+    emitTrace32((uint32_t)(uintptr_t)&traceImport);
+    static const unsigned char kRestore[] = {
+      0xff, 0xd0,              // call *%eax
+      0x83, 0xc4, 0x08,        // addl $8, %esp
+      0x61,                    // popal
+      0x9d,                    // popfl
+      0x87, 0x04, 0x24,        // xchgl %eax, (%esp): the index into %eax
+      0x8b, 0x04, 0x85,        // movl targets(,%eax,4), %eax
+    };
+    emitTrace(kRestore, sizeof(kRestore));
+    emitTrace32((uint32_t)(uintptr_t)g_trace_targets);
+    static const unsigned char kContinue[] = {
+      0x87, 0x04, 0x24,        // xchgl %eax, (%esp): the target onto the stack
+      0xc3,                    // ret, into the import
+    };
+    emitTrace(kContinue, sizeof(kContinue));
+  }
+  size_t index = g_trace_count++;
+  g_trace_names[index] = strdup(name.c_str());
+  g_trace_targets[index] = target;
+  uintptr_t stub = (uintptr_t)g_trace_code + g_trace_offset;
+  static const unsigned char kPush = 0x68;  // pushl $index
+  emitTrace(&kPush, 1);
+  emitTrace32((uint32_t)index);
+  static const unsigned char kJump = 0xe9;  // jmp common
+  emitTrace(&kJump, 1);
+  emitTrace32((uint32_t)((uintptr_t)g_trace_code -
+                         ((uintptr_t)g_trace_code + g_trace_offset + 4)));
+  return stub;
+}
+#endif
+
 static void reportMapFailure(const MachO& mach, const char* segment,
                              uintptr_t vmaddr) {
   int e = errno;
@@ -718,7 +822,11 @@ class MachOLoader {
             << *ptr << " => " << (void*)sym << " @" << ptr << endl;
 
         if (bind->type == MachO::BIND_TYPE_JUMP_TABLE) {
+#ifndef __x86_64__
+          writeJump(bind->vmaddr + slide, traceTarget(name, (uintptr_t)sym));
+#else
           writeJump(bind->vmaddr + slide, (uintptr_t)sym);
+#endif
           continue;
         }
         if (bind->type == MachO::BIND_TYPE_EXTERNAL_RELOC) {
