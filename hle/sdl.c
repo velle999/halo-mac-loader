@@ -153,9 +153,13 @@ int hle_sdl_switch_mode(const hle_display_mode* mode) {
   return SDL_SetWindowDisplayMode(game_window, &closest) == 0;
 }
 
+// The game warps the pointer back to the middle of its window every frame
+// it reads the mouse. Only a window with the keyboard focus, the one being
+// played, moves the desktop's pointer; otherwise the warp is only recorded.
 void hle_sdl_warp_mouse(int x, int y) {
   hle_input_mouse_position(x, y);
-  if (game_window && !SDL_GetRelativeMouseMode()) {
+  if (game_window && !SDL_GetRelativeMouseMode() &&
+      (SDL_GetWindowFlags(game_window) & SDL_WINDOW_INPUT_FOCUS)) {
     SDL_WarpMouseInWindow(game_window, x - game_content.left,
                           y - game_content.top);
   }
