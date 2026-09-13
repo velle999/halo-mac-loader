@@ -17,10 +17,10 @@ Work in progress. Every one of the game's 724 imports binds. It runs its
 startup checks (CPU, memory, QuickTime and OpenGL versions, an OpenGL context
 probe, video memory, disk space), finds its disc, shows its EULA and asks for
 its product key, which are answered without being shown (see
-Configuration), loads its maps and shaders, and draws its main menu: 30
-frames a second in an 800x600 window on a Pentium 4 with a GeForce 7600 GS
-and NVIDIA's 304 driver. Playing has not been tried yet. Sound, the intro
-movies and pbuffers are not implemented.
+Configuration), loads its maps and shaders, and draws its main menu, with
+its music: 30 frames a second in an 800x600 window on a Pentium 4 with a
+GeForce 7600 GS and NVIDIA's 304 driver. Playing has not been tried yet.
+The intro movies and pbuffers are not implemented.
 
 An import with no implementation is bound to a guard page, so its first use
 stops the program with its name, its caller and the registers.
@@ -53,6 +53,8 @@ executables at 0x400000, which is inside the game's image.
 - `HLE_WINDOWED=1` plays in a window rather than changing the screen's mode,
   and ticks the game's own "Play in a window" setting.
 - `HLE_VRAM_MB` is the video memory the renderer reports, 256 by default.
+- `HLE_SOUND=0` keeps the game silent. Otherwise its sound goes to SDL's
+  default audio device, or to the one `SDL_AUDIODRIVER` names.
 - Dialogs are answered without being shown. When the game runs a dialog
   from its NIB, `HLE_CONTROL_<code>=<value>` first sets the control with that
   four-letter signature (`HLE_CONTROL_FSAA=2` picks the second FSAA setting),
@@ -142,10 +144,18 @@ bundles and localized strings, preferences, UUIDs and character sets.
   game draws in with OpenGL is real. The Carbon Event Manager, window groups,
   the Process Manager and Multiprocessing Services are implemented. SDL input
   arrives as Carbon keyboard and mouse events with Mac key codes, and while
-  the game hides the cursor the pointer is held in relative mode.
+  the game hides the cursor the pointer is held in relative mode. The game's
+  warps move the desktop's pointer only while its window has the keyboard
+  focus.
 - QuickDraw keeps ports, GWorlds with real pixels, colors and rectangles.
-- Sound Manager channels keep time but are silent. QuickTime reports no
-  movies, so the intro is skipped. IOKit shows the disc and no HID devices.
+- Sound Manager channels play through one SDL audio device. A channel's
+  buffers are mixed at their own rate times the channel's rate multiplier,
+  with its volume and amplitude, and commands queued behind a buffer wait
+  until it has played. Uncompressed 16-bit samples are little-endian, as on
+  an Intel Mac; compressed formats are silent.
+  `make tests/sound_test && tests/sound_test` checks the mixing.
+- QuickTime reports no movies, so the intro is skipped. IOKit shows the
+  disc and no HID devices.
 
 ## Tools
 
