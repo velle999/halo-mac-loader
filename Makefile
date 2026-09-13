@@ -110,6 +110,9 @@ tests/crypto_test: tests/crypto_test.c tests/crypto_vectors.h hle/crypto.c
 tests/arb_test: tests/arb_test.c hle/arb_program.c hle/arb_program.h
 	$(CC) $(CFLAGS) -o $@ tests/arb_test.c hle/arb_program.c
 
+tests/sound_test: tests/sound_test.c hle/sound_mix.c hle/sound_mix.h
+	$(CC) $(CFLAGS) -o $@ tests/sound_test.c hle/sound_mix.c
+
 dist:
 	cd /tmp && rm -fr maloader-$(VERSION) && git clone git@github.com:shinh/maloader.git && rm -fr maloader/.git && mv maloader maloader-$(VERSION) && tar -cvzf maloader-$(VERSION).tar.gz maloader-$(VERSION)
 
