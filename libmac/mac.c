@@ -469,8 +469,8 @@ int vm_deallocate() {
 
 void *__darwin_mmap(void *addr, size_t length, int prot, int flags,
                     int fd, off_t offset) {
-  LOGF("mmap: addr=%p length=%lu prot=%d flags=%d fd=%d offset=%lu\n",
-       addr, (unsigned long)length, prot, flags, fd, offset);
+  LOGF("mmap: addr=%p length=%lu prot=%d flags=%d fd=%d offset=%lld\n",
+       addr, (unsigned long)length, prot, flags, fd, (long long)offset);
 
   // MAP_ANON is 0x1000 on darwin but 0x20 on linux.
   //

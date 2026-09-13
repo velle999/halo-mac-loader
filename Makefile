@@ -11,7 +11,9 @@ CC=clang
 CXX=clang++
 endif
 CXXFLAGS=$(GCCFLAGS) -W --std=c++11
-CFLAGS=$(GCCFLAGS) -fPIC
+# Darwin's off_t is 64 bits even on i386; libmac's Darwin structures and
+# the offsets games pass need Linux's to match.
+CFLAGS=$(GCCFLAGS) -fPIC -D_FILE_OFFSET_BITS=64 -Wno-multichar
 
 EXES=libmac.so extract macho2elf ld-mac
 
@@ -97,7 +99,10 @@ libmac.so: libmac/mac.o libmac/strmode.c $(HLE_OBJS)
 	$(CC) -shared $^ $(CFLAGS) -o $@ $(GCC_EXTRA_FLAGS) $(LDFLAGS) -lpthread
 
 tests/cf_test: tests/cf_test.c libmac.so hle/cf.h
-	$(CC) $(GCCFLAGS) -o $@ tests/cf_test.c ./libmac.so -Wl,-rpath,$(CURDIR)
+	$(CC) $(CFLAGS) -o $@ tests/cf_test.c ./libmac.so -Wl,-rpath,$(CURDIR)
+
+tests/files_test: tests/files_test.c libmac.so hle/carbon.h
+	$(CC) $(CFLAGS) -o $@ tests/files_test.c ./libmac.so -Wl,-rpath,$(CURDIR)
 
 dist:
 	cd /tmp && rm -fr maloader-$(VERSION) && git clone git@github.com:shinh/maloader.git && rm -fr maloader/.git && mv maloader maloader-$(VERSION) && tar -cvzf maloader-$(VERSION).tar.gz maloader-$(VERSION)

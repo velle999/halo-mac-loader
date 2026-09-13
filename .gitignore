@@ -26,3 +26,4 @@ macho2elf
 *.d
 build.log
 tests/cf_test
+tests/files_test

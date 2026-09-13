@@ -163,6 +163,13 @@ extern const CFAllocatorRef kCFAllocatorNull;
 extern const CFStringRef kCFPreferencesCurrentApplication;
 CFStringRef CFStringCreateWithCharacters(CFAllocatorRef allocator,
                                          const UniChar* chars, CFIndex length);
+CFStringRef CFStringCreateWithCString(CFAllocatorRef allocator, const char* str,
+                                      CFStringEncoding encoding);
+CFIndex CFStringGetBytes(CFStringRef str, CFRange range,
+                         CFStringEncoding encoding, unsigned int loss_byte,
+                         unsigned int external_representation, UInt8* buffer,
+                         CFIndex max_length, CFIndex* used_length);
+void CFStringGetCharacters(CFStringRef str, CFRange range, UniChar* buffer);
 CFBundleRef CFBundleGetMainBundle(void);
 CFStringRef CFBundleGetIdentifier(CFBundleRef bundle);
 
