@@ -62,7 +62,7 @@ executables at 0x400000, which is inside the game's image.
   button is hit; without it, or when the game refuses the text, their second
   button (Cancel or Quit) is. The game asks for its product key, printed on
   the back of the Halo manual, in `DLOG` 10001 (10002 in German, 10003 in
-  French): `HLE_DIALOG_10001=XXXXX-XXXXX-XXXXX-XXXXX`. The game saves a key it
+  French): `HLE_DIALOG_10001=XXXX-XXXX-XXXX-XXXX`. The game saves a key it
   accepts with its preferences.
 - `HLE_TRACE=1` logs lookups and decisions, and `LD_MAC_LIST_UNDEFINED=1`
   lists the imports with no implementation.
@@ -107,6 +107,10 @@ bundles and localized strings, preferences, UUIDs and character sets.
   the game's direct `gl` imports bind to the system's libGL. The renderer
   described is one accelerated NVIDIA renderer. Pbuffers are not supported
   yet.
+- The game copies `GL_EXTENSIONS` into a 4096-byte buffer, which a newer
+  driver's list overruns, so it sees only the extensions whose names its
+  executable contains, plus `GL_EXT_texture_rectangle` where the driver has
+  the ARB extension of the same enumerants.
 - Displays, their modes and the main GDevice describe SDL's display 0. A mode
   switch resizes the game's window, and a window covering a captured display
   goes full screen unless `HLE_WINDOWED` is set. Gamma tables are recorded,
