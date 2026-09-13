@@ -25,3 +25,4 @@ extract
 macho2elf
 *.d
 build.log
+tests/cf_test

@@ -599,6 +599,58 @@ class MachOLoader {
     }
   }
 
+  // Resolves a Darwin symbol name, without its leading underscore, the way
+  // an import binds: Mach-O exports, renames, then libmac and the Linux
+  // libraries. NULL when nothing implements it. The game's own run-time
+  // lookups (CFBundleGetFunctionPointerForName, dlsym) come through here too.
+  char* resolveName(string name, const string& mach_name) {
+    const Exports::const_iterator export_found = exports_.find(mach_name);
+    if (export_found != exports_.end()) {
+      return (char*)export_found->second.addr;
+    }
+#ifndef __x86_64__
+    static const char* SUF_UNIX03 = "$UNIX2003";
+    static const size_t SUF_UNIX03_LEN = strlen(SUF_UNIX03);
+    if (name.size() > SUF_UNIX03_LEN &&
+        !strcmp(name.c_str() + name.size() - SUF_UNIX03_LEN, SUF_UNIX03)) {
+      name = name.substr(0, name.size() - SUF_UNIX03_LEN);
+    }
+    for (size_t r = 0;
+         r < sizeof(kClassicRenames) / sizeof(kClassicRenames[0]); r++) {
+      if (name == kClassicRenames[r][0]) {
+        name = kClassicRenames[r][1];
+        break;
+      }
+    }
+#endif
+    map<string, string>::const_iterator found = g_rename.find(name);
+    if (found != g_rename.end()) {
+      LOG << "Applying renaming: " << name << " => " << found->second << endl;
+      name = found->second;
+    }
+#ifndef __x86_64__
+    for (size_t d = 0;
+         d < sizeof(kDivergentAbi) / sizeof(kDivergentAbi[0]); d++) {
+      if (name == kDivergentAbi[d]) {
+        return NULL;
+      }
+    }
+#endif
+    char* sym = (char*)dlsym(RTLD_DEFAULT, name.c_str());
+    if (!sym) {
+      map<string, string>::const_iterator iter = symbol_to_so_.find(name);
+      if (iter != symbol_to_so_.end()) {
+        if (dlopen(iter->second.c_str(), RTLD_LAZY | RTLD_GLOBAL)) {
+          sym = (char*)dlsym(RTLD_DEFAULT, name.c_str());
+        } else {
+          fprintf(stderr, "Couldn't load %s for %s: %s\n",
+                  iter->second.c_str(), name.c_str(), dlerror());
+        }
+      }
+    }
+    return sym;
+  }
+
   void doBind(const MachO& mach, intptr slide) {
     string last_weak_name = "";
     char* last_weak_sym = NULL;
@@ -671,60 +723,7 @@ class MachOLoader {
             }
           }
         } else {
-#ifndef __x86_64__
-          static const char* SUF_UNIX03 = "$UNIX2003";
-          static const size_t SUF_UNIX03_LEN = strlen(SUF_UNIX03);
-          if (name.size() > SUF_UNIX03_LEN &&
-              !strcmp(name.c_str() + name.size() - SUF_UNIX03_LEN,
-                      SUF_UNIX03)) {
-            name = name.substr(0, name.size() - SUF_UNIX03_LEN);
-          }
-          for (size_t r = 0;
-               r < sizeof(kClassicRenames) / sizeof(kClassicRenames[0]); r++) {
-            if (name == kClassicRenames[r][0]) {
-              name = kClassicRenames[r][1];
-              break;
-            }
-          }
-#endif
-
-          map<string, string>::const_iterator found =
-              g_rename.find(name);
-          if (found != g_rename.end()) {
-            LOG << "Applying renaming: " << name
-                << " => " << found->second.c_str() << endl;
-            name = found->second.c_str();
-          }
-
-          const Exports::const_iterator export_found =
-              exports_.find(bind->name);
-          if (export_found != exports_.end()) {
-            sym = (char*)export_found->second.addr;
-          }
-          bool divergent = false;
-#ifndef __x86_64__
-          for (size_t d = 0;
-               d < sizeof(kDivergentAbi) / sizeof(kDivergentAbi[0]); d++) {
-            if (name == kDivergentAbi[d]) {
-              divergent = true;
-            }
-          }
-#endif
-          if (!sym && !divergent) {
-            sym = (char*)dlsym(RTLD_DEFAULT, name.c_str());
-            if (!sym) {
-              map<string, string>::const_iterator iter =
-                symbol_to_so_.find(name);
-              if (iter != symbol_to_so_.end()) {
-                if (dlopen(iter->second.c_str(), RTLD_LAZY | RTLD_GLOBAL)) {
-                  sym = (char*)dlsym(RTLD_DEFAULT, name.c_str());
-                } else {
-                  fprintf(stderr, "Couldn't load %s for %s: %s\n",
-                          iter->second.c_str(), name.c_str(), dlerror());
-                }
-              }
-            }
-          }
+          sym = resolveName(name, bind->name);
           if (!sym) {
             LOG << name << ": undefined symbol" << endl;
             sym = undefinedSymbolAddress(name);
@@ -1178,8 +1177,33 @@ static void initLibMac() {
 static string ld_mac_dlerror_buf;
 static bool ld_mac_dlerror_is_set;
 
+static void* ld_mac_resolve_impl(const char* name) {
+  MachOLoader* loader = g_loader;
+  if (!loader) {
+    return dlsym(RTLD_DEFAULT, name);
+  }
+  return loader->resolveName(name, string("_") + name);
+}
+
+// What dlopen returns for a Mac library that is not here as a Mach-O file,
+// which is every system dylib and framework: its symbols resolve the way
+// imports do.
+static Exports g_system_library;
+
+static bool isSystemLibraryHandle(void* handle) {
+  // Darwin's RTLD_NEXT, RTLD_DEFAULT, RTLD_SELF and RTLD_MAIN_ONLY are -1..-5.
+  return handle == &g_system_library ||
+         ((intptr_t)handle < 0 && (intptr_t)handle >= -5);
+}
+
 static void* ld_mac_dlopen(const char* filename, int flag) {
-  LOG << "ld_mac_dlopen: " << filename << " " << flag << endl;
+  LOG << "ld_mac_dlopen: " << (filename ? filename : "(null)") << " "
+      << flag << endl;
+  if (!filename || access(filename, R_OK) != 0) {
+    fprintf(stderr, "ld-mac: dlopen(%s): no Mach-O file there; its symbols "
+            "resolve like imports\n", filename ? filename : "NULL");
+    return &g_system_library;
+  }
 
   Timer timer;
   timer.start();
@@ -1201,7 +1225,9 @@ static void* ld_mac_dlopen(const char* filename, int flag) {
 static int ld_mac_dlclose(void* handle) {
   LOG << "ld_mac_dlclose" << endl;
 
-  delete (Exports*)handle;
+  if (!isSystemLibraryHandle(handle)) {
+    delete (Exports*)handle;
+  }
   return 0;
 }
 
@@ -1217,6 +1243,15 @@ static const char* ld_mac_dlerror(void) {
 static void* ld_mac_dlsym(void* handle, const char* symbol) {
   LOG << "ld_mac_dlsym: " << symbol << endl;
 
+  if (isSystemLibraryHandle(handle)) {
+    void* sym = ld_mac_resolve_impl(symbol);
+    if (!sym) {
+      ld_mac_dlerror_is_set = true;
+      ld_mac_dlerror_buf = string("undefined symbol: ") + symbol;
+      fprintf(stderr, "ld-mac: dlsym(%s): nothing implements it\n", symbol);
+    }
+    return sym;
+  }
   Exports* exports = (Exports*)handle;
   Exports::const_iterator found = exports->find(string("_") + symbol);
   if (found == exports->end()) {
@@ -1238,6 +1273,12 @@ void initDlfcn() {
   SET_DLFCN_FUNC(dlclose);
   SET_DLFCN_FUNC(dlerror);
   SET_DLFCN_FUNC(dlsym);
+
+  // hle/ looks functions up by name, for CFBundleGetFunctionPointerForName.
+  void** resolve = (void**)dlsym(RTLD_DEFAULT, "ld_mac_resolve");
+  if (resolve) {
+    *resolve = (void*)&ld_mac_resolve_impl;
+  }
 }
 
 int main(int argc, char* argv[], char* envp[]) {

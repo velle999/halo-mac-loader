@@ -13,13 +13,13 @@ you need your own copy.
 ## Status
 
 Work in progress. The executable loads, its imports bind, and its C++ static
-initializers run. Imports with no implementation yet are bound to guard pages,
-so the first one the game uses stops it with its name:
+initializers run. The CoreFoundation it imports is implemented in `hle/`.
+Imports with no implementation yet are bound to guard pages, so the first one
+the game uses stops it with its name. Today that is the Carbon File Manager:
 
-    UNIMPLEMENTED: CFLocaleCopyCurrent called from 0x29e6a7
+    UNIMPLEMENTED: FSFindFolder called from 0x2a6421
 
-CoreFoundation is being written now; Carbon, AGL and OpenGL, input and audio
-follow.
+The rest of Carbon, AGL and OpenGL, input and audio follow.
 
 ## Requirements
 
@@ -38,6 +38,20 @@ follow.
 `ld-mac` is linked `-no-pie`. A 32-bit kernel loads position-independent
 executables at 0x400000, which is inside the game's image.
 
+## CoreFoundation
+
+`hle/` implements the 77 CoreFoundation calls the game imports, with the
+Darwin i386 calling convention: strings (including the compiler's constant
+strings), arrays, dictionaries, numbers, data, XML property lists, URLs,
+bundles and localized strings, preferences, UUIDs and character sets.
+
+- Preferences are XML property lists in
+  `~/.local/share/halo-mac-loader/home/Library/Preferences/`, or in
+  `$HALO_MAC_HOME/Library/Preferences/` when that is set.
+- `HLE_TRACE=1` logs bundle, resource and preference lookups.
+- `make tests/cf_test && tests/cf_test /path/to/Halo.app` checks it,
+  including against the game's own bundle.
+
 ## Changes from maloader
 
 - Pre-10.5 i386 images: `__IMPORT,__jump_table` stubs, external relocations,
@@ -47,6 +61,10 @@ executables at 0x400000, which is inside the game's image.
   variable, `bootstrap_port`, a monotonic `mach_absolute_time`.
 - An unimplemented import stops the program with its name, its caller, the
   registers and the frame-pointer chain.
+- Lookups the program makes at run time, through
+  `CFBundleGetFunctionPointerForName` or `dlsym`, resolve the way its imports
+  do. `dlopen` of a Mac library that is not present as a Mach-O file returns
+  a handle for exactly that, instead of exiting.
 
 ---
 

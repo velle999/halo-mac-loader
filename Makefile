@@ -91,8 +91,13 @@ ld-mac: ld-mac.o mach-o.o fat.o log.o
 	$(CXX) $^ -o $@ -g -no-pie -ldl -lpthread $(GCC_EXTRA_FLAGS) $(CXX_LDFLAGS)
 
 # TODO(hamaji): autotoolize?
-libmac.so: libmac/mac.o libmac/strmode.c
+# hle/: CoreFoundation and the rest of what Mac OS X gives the game.
+HLE_OBJS=$(patsubst %.c,%.o,$(wildcard hle/*.c))
+libmac.so: libmac/mac.o libmac/strmode.c $(HLE_OBJS)
 	$(CC) -shared $^ $(CFLAGS) -o $@ $(GCC_EXTRA_FLAGS) $(LDFLAGS) -lpthread
+
+tests/cf_test: tests/cf_test.c libmac.so hle/cf.h
+	$(CC) $(GCCFLAGS) -o $@ tests/cf_test.c ./libmac.so -Wl,-rpath,$(CURDIR)
 
 dist:
 	cd /tmp && rm -fr maloader-$(VERSION) && git clone git@github.com:shinh/maloader.git && rm -fr maloader/.git && mv maloader maloader-$(VERSION) && tar -cvzf maloader-$(VERSION).tar.gz maloader-$(VERSION)
