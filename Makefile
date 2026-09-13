@@ -1,5 +1,6 @@
 VERSION=0.4
-BITS=64
+# The target is Halo's i386 slice on an i686 box.
+BITS=32
 
 GCC_EXTRA_FLAGS=-m$(BITS)
 GCCFLAGS+=-g -Iinclude -Wall -MMD -fno-omit-frame-pointer -O $(GCC_EXTRA_FLAGS)
@@ -9,7 +10,7 @@ CXX_LDFLAGS+=-lc++ -lsupc++
 CC=clang
 CXX=clang++
 endif
-CXXFLAGS=$(GCCFLAGS) -W -Werror --std=c++11
+CXXFLAGS=$(GCCFLAGS) -W --std=c++11
 CFLAGS=$(GCCFLAGS) -fPIC
 
 EXES=libmac.so extract macho2elf ld-mac
@@ -84,12 +85,14 @@ extract: extract.o fat.o
 macho2elf: macho2elf.o mach-o.o fat.o log.o
 	$(CXX) $^ -o $@ -g $(GCC_EXTRA_FLAGS) $(CXX_LDFLAGS)
 
+# -no-pie: a 32-bit kernel loads a PIE at 0x400000, inside the Mac image's
+# __TEXT/__DATA, and mapping those segments would overwrite the loader.
 ld-mac: ld-mac.o mach-o.o fat.o log.o
-	$(CXX) -v $^ -o $@ -g -ldl -lpthread $(GCC_EXTRA_FLAGS) $(CXX_LDFLAGS)
+	$(CXX) $^ -o $@ -g -no-pie -ldl -lpthread $(GCC_EXTRA_FLAGS) $(CXX_LDFLAGS)
 
 # TODO(hamaji): autotoolize?
 libmac.so: libmac/mac.o libmac/strmode.c
-	$(CC) -shared $^ $(CFLAGS) -o $@ $(GCC_EXTRA_FLAGS) $(LDFLAGS) -luuid -lz
+	$(CC) -shared $^ $(CFLAGS) -o $@ $(GCC_EXTRA_FLAGS) $(LDFLAGS) -lpthread
 
 dist:
 	cd /tmp && rm -fr maloader-$(VERSION) && git clone git@github.com:shinh/maloader.git && rm -fr maloader/.git && mv maloader maloader-$(VERSION) && tar -cvzf maloader-$(VERSION).tar.gz maloader-$(VERSION)

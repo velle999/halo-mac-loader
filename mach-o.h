@@ -44,6 +44,12 @@ class MachO {
     uint8_t type;
   };
 
+  // Bind types beyond dyld's BIND_TYPE_*, for classic (pre-10.5) images.
+  // A jump-table entry gets a 5-byte JMP rel32 written over it; an external
+  // relocation gets the symbol address added to the addend stored in place.
+  static const uint8_t BIND_TYPE_JUMP_TABLE = 100;
+  static const uint8_t BIND_TYPE_EXTERNAL_RELOC = 101;
+
   struct Bind {
     uint64_t vmaddr;
     const char* name;

@@ -76,6 +76,14 @@ struct nlist {
 
 #define N_WEAK_DEF      0x0080
 
+// See mach-o/reloc.h, which include/ does not vendor.
+struct macho_relocation_info {
+  int32_t r_address;
+  uint32_t r_symbolnum:24, r_pcrel:1, r_length:2, r_extern:1, r_type:4;
+};
+#define R_SCATTERED 0x80000000
+#define GENERIC_RELOC_VANILLA 0
+
 static uint64_t uleb128(const uint8_t*& p) {
   uint64_t r = 0;
   int s = 0;
@@ -130,23 +138,29 @@ class MachOImpl : public MachO {
   void readExport(const uint8_t* start, const uint8_t* p, const uint8_t* end,
                   string* name_buf);
 
-  template <class section>
-  void readClassicBind(const section& sec,
+  // Each entry of an indirect-symbol section names the import it holds.
+  // |entry_size| is the pointer size, or 5 for an i386 jump-table stub.
+  void readClassicBind(uint64_t addr, uint64_t size, uint32_t reserved1,
+                       uint32_t entry_size, uint8_t type,
                        uint32_t* dysyms,
                        uint32_t* symtab,
                        const char* symstrtab) {
-    uint32_t indirect_offset = sec.reserved1;
-    int count = sec.size / ptrsize_;
-    for (int i = 0; i < count; i++) {
-      uint32_t dysym = dysyms[indirect_offset + i];
+    uint64_t count = size / entry_size;
+    for (uint64_t i = 0; i < count; i++) {
+      uint32_t dysym = dysyms[reserved1 + i];
+      // A local or absolute entry already holds its final value in an
+      // unslid image; binding it by its index bits would clobber it.
+      if (dysym & (INDIRECT_SYMBOL_LOCAL | INDIRECT_SYMBOL_ABS))
+        continue;
       uint32_t index = dysym & 0x3fffffff;
       nlist* sym = (nlist*)(symtab + index * (is64_ ? 4 : 3));
 
       MachO::Bind* bind = new MachO::Bind();
       bind->name = symstrtab + sym->n_strx;
-      bind->vmaddr = sec.addr + i * ptrsize_;
-      bind->value = sym->n_value;
-      bind->type = BIND_TYPE_POINTER;
+      bind->vmaddr = addr + i * entry_size;
+      // nlist above is the 64-bit layout; a 32-bit n_value is 4 bytes.
+      bind->value = is64_ ? sym->n_value : (uint32_t)sym->n_value;
+      bind->type = type;
       bind->ordinal = 1;
       bind->is_weak = ((sym->n_desc & N_WEAK_DEF) != 0);
       bind->is_classic = true;
@@ -157,6 +171,13 @@ class MachOImpl : public MachO {
       binds_.push_back(bind);
     }
   }
+
+  struct StubTable {
+    uint64_t addr;
+    uint64_t size;
+    uint32_t reserved1;
+  };
+  vector<StubTable> jump_tables_;
 
   char* mapped_;
   size_t mapped_size_;
@@ -221,12 +242,23 @@ void MachOImpl::readSegment(char* cmds_ptr,
       bind_sections->push_back(sections + j);
       break;
     }
+    case S_SYMBOL_STUBS:
+      // Pre-10.5 i386 images call imports through __IMPORT,__jump_table,
+      // 5-byte self-modifying stubs that dyld overwrote with JMP rel32.
+      if ((sec.flags & S_ATTR_SELF_MODIFYING_CODE) && sec.reserved2 == 5) {
+        StubTable table = { sec.addr, sec.size, sec.reserved1 };
+        jump_tables_.push_back(table);
+        break;
+      }
+      LOGF("FIXME: %u-byte symbol stubs will not be handled for %s in %s\n",
+           sec.reserved2, sec.sectname, sec.segname);
+      break;
+
     case S_ZEROFILL:
     case S_CSTRING_LITERALS:
     case S_4BYTE_LITERALS:
     case S_8BYTE_LITERALS:
     case S_LITERAL_POINTERS:
-    case S_SYMBOL_STUBS:
     case S_MOD_TERM_FUNC_POINTERS:
       // TODO(hamaji): Support term_funcs.
     case S_COALESCED:
@@ -567,6 +599,8 @@ MachOImpl::MachOImpl(const char* filename, int fd, size_t offset, size_t len,
 
   uint32_t* symtab = NULL;
   uint32_t* dysyms = NULL;
+  uint32_t extreloff = 0;
+  uint32_t nextrel = 0;
   const char* symstrtab = NULL;
   dyld_info_command* dyinfo = NULL;
   vector<section_64*> bind_sections_64;
@@ -711,6 +745,8 @@ MachOImpl::MachOImpl(const char* filename, int fd, size_t offset, size_t len,
           dysyms = reinterpret_cast<uint32_t*>(
               bin + dysymtab_cmd->indirectsymoff);
       }
+      extreloff = dysymtab_cmd->extreloff;
+      nextrel = dysymtab_cmd->nextrel;
       if (FLAGS_READ_DYSYMTAB) {
         for (uint32_t j = 0; j < dysymtab_cmd->nindirectsyms; j++) {
           uint32_t dysym = dysyms[j];
@@ -788,12 +824,46 @@ MachOImpl::MachOImpl(const char* filename, int fd, size_t offset, size_t len,
   // No LC_DYLD_INFO_ONLY, we will read classic binding info.
   if (!dyinfo && dysyms && symtab && symstrtab) {
     for (size_t i = 0; i < bind_sections_64.size(); i++) {
-      readClassicBind<section_64>(
-          *bind_sections_64[i], dysyms, symtab, symstrtab);
+      const section_64& sec = *bind_sections_64[i];
+      readClassicBind(sec.addr, sec.size, sec.reserved1, ptrsize_,
+                      BIND_TYPE_POINTER, dysyms, symtab, symstrtab);
     }
     for (size_t i = 0; i < bind_sections_32.size(); i++) {
-      readClassicBind<section>(
-          *bind_sections_32[i], dysyms, symtab, symstrtab);
+      const section& sec = *bind_sections_32[i];
+      readClassicBind(sec.addr, sec.size, sec.reserved1, ptrsize_,
+                      BIND_TYPE_POINTER, dysyms, symtab, symstrtab);
+    }
+    for (size_t i = 0; i < jump_tables_.size(); i++) {
+      const StubTable& table = jump_tables_[i];
+      readClassicBind(table.addr, table.size, table.reserved1, 5,
+                      MachO::BIND_TYPE_JUMP_TABLE, dysyms, symtab, symstrtab);
+    }
+  }
+
+  // External relocations point data at imports: CFString isa pointers, C++
+  // typeinfo vtables, __cxa_pure_virtual slots. i386 keeps the addend in
+  // place, and r_address counts from segment 0 (__PAGEZERO, at 0).
+  if (!dyinfo && nextrel && symtab && symstrtab) {
+    const macho_relocation_info* rels =
+        reinterpret_cast<macho_relocation_info*>(bin + extreloff);
+    for (uint32_t i = 0; i < nextrel; i++) {
+      const macho_relocation_info& r = rels[i];
+      if (is64_ || ((uint32_t)r.r_address & R_SCATTERED) || !r.r_extern ||
+          r.r_pcrel || r.r_length != 2 || r.r_type != GENERIC_RELOC_VANILLA) {
+        fprintf(stderr, "%s: unsupported external relocation %u at %#x\n",
+                filename, i, (unsigned)r.r_address);
+        exit(1);
+      }
+      nlist* sym = (nlist*)(symtab + r.r_symbolnum * 3);
+      MachO::Bind* bind = new MachO::Bind();
+      bind->name = symstrtab + sym->n_strx;
+      bind->vmaddr = segments_[0]->vmaddr + (uint32_t)r.r_address;
+      bind->addend = 0;
+      bind->type = MachO::BIND_TYPE_EXTERNAL_RELOC;
+      bind->ordinal = 1;
+      bind->is_weak = false;
+      bind->is_classic = true;
+      binds_.push_back(bind);
     }
   }
 }

@@ -50,7 +50,6 @@
 
 #include <mac-ctype.h>
 #include <runetype.h>
-#include <uuid/uuid.h>
 
 #ifdef NOLOG
 # define LOGF(...) if (0) fprintf(stderr, __VA_ARGS__)
@@ -355,19 +354,22 @@ void libiconv_set_relocation_prefix(const char* orig, const char* curr) {
   abort();
 }
 
-// TODO: We need rdtsc.
 struct mach_timebase_info {
   uint32_t numer;
   uint32_t denom;
 };
 
+// Monotonic wall time in nanoseconds. clock() was process CPU time, which
+// stands still whenever the caller sleeps and would stall a game's timing.
 uint64_t mach_absolute_time() {
-  return clock();
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (uint64_t)ts.tv_sec * 1000000000ULL + ts.tv_nsec;
 }
 
 int mach_timebase_info(struct mach_timebase_info* info) {
   info->numer = 1;
-  info->denom = CLOCKS_PER_SEC;
+  info->denom = 1;
   return 0;
 }
 
@@ -1420,12 +1422,18 @@ void __darwin_qsort_r(void* base, size_t nel, size_t width, void* thunk,
   qsort_r(base, nel, width, &__darwin_qsort_r_helper, &ctx);
 }
 
-// uuid_t is unsigned char[16] both on Linux and Mac.
-int __darwin_gethostuuid(uuid_t id, const struct timespec *wait) {
+// uuid_t is unsigned char[16] both on Linux and Mac. The bytes are
+// 550e8400-e29b-41d4-a716-446655440000, spelled out so libmac needs no
+// libuuid headers.
+int __darwin_gethostuuid(unsigned char* id, const struct timespec *wait) {
   // TODO(mayah): Returns the same uuid for now.
   // It might be better if we can generate uuid per host
   // from mac adderss or something?
-  uuid_parse("550e8400-e29b-41d4-a716-446655440000", id);
+  static const unsigned char kHostUuid[16] = {
+    0x55, 0x0e, 0x84, 0x00, 0xe2, 0x9b, 0x41, 0xd4,
+    0xa7, 0x16, 0x44, 0x66, 0x55, 0x44, 0x00, 0x00,
+  };
+  memcpy(id, kHostUuid, sizeof(kHostUuid));
   return 0;
 }
 
@@ -1499,7 +1507,79 @@ int32_t OSAtomicAdd64(int64_t theAmount, volatile int64_t *theValue) {
   return __sync_fetch_and_add(theValue, theAmount);
 }
 
+// 10.4-era binaries reach the standard streams as &__sF[0..2], so this is an
+// array of Darwin-sized FILEs (88 bytes on i386). Only what the wrappers and
+// Darwin's getc/putc macros read is filled in: _r and _w stay negative so
+// the macros always call through to __srget/__swbuf.
+#define __DARWIN_SFILE_SIZE 88
+typedef struct {
+  __darwin_FILE f;
+  char pad[__DARWIN_SFILE_SIZE - sizeof(__darwin_FILE)];
+} __darwin_sFILE_slot;
+__darwin_sFILE_slot __sF[3];
+
+static void __init_sF(__darwin_FILE* fp, FILE* linux_fp) {
+  memset(fp, 0, sizeof(*fp));
+  fp->_r = -1;
+  fp->_w = -1;
+  fp->_file = fileno(linux_fp);
+  fp->linux_fp = linux_fp;
+}
+
+// A 10.4 crt1 writes 0 to the errno variable itself; reads go through
+// __error().
+int __darwin_errno_global;
+
+unsigned int bootstrap_port;
+
+// keymgr: a process-wide key -> pointer table. The libgcc linked into 10.4
+// images keeps its EH object lists and C++ handlers here.
+#define __DARWIN_KEYMGR_SLOTS 32
+static struct {
+  unsigned int key;
+  void* ptr;
+} __keymgr_slots[__DARWIN_KEYMGR_SLOTS];
+static pthread_mutex_t __keymgr_lock = PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
+
+static void** __keymgr_find(unsigned int key) {
+  int i;
+  for (i = 0; i < __DARWIN_KEYMGR_SLOTS; i++) {
+    if (__keymgr_slots[i].key == key)
+      return &__keymgr_slots[i].ptr;
+    if (__keymgr_slots[i].key == 0) {
+      __keymgr_slots[i].key = key;
+      return &__keymgr_slots[i].ptr;
+    }
+  }
+  fprintf(stderr, "keymgr: out of slots for key %u\n", key);
+  abort();
+}
+
+void* _keymgr_get_and_lock_processwide_ptr(unsigned int key) {
+  pthread_mutex_lock(&__keymgr_lock);
+  return *__keymgr_find(key);
+}
+
+int _keymgr_get_and_lock_processwide_ptr_2(unsigned int key, void** result) {
+  *result = _keymgr_get_and_lock_processwide_ptr(key);
+  return 0;
+}
+
+int _keymgr_set_and_unlock_processwide_ptr(unsigned int key, void* ptr) {
+  *__keymgr_find(key) = ptr;
+  pthread_mutex_unlock(&__keymgr_lock);
+  return 0;
+}
+
+int _keymgr_unlock_processwide_ptr(unsigned int key) {
+  pthread_mutex_unlock(&__keymgr_lock);
+  return 0;
+}
+
 __attribute__((constructor)) void initMac() {
+  __init_sF(&__sF[0].f, stdin);
+  __init_sF(&__sF[1].f, stdout);
+  __init_sF(&__sF[2].f, stderr);
   __darwin_stdin = __init_darwin_FILE(stdin);
   __darwin_stdout = __init_darwin_FILE(stdout);
   __darwin_stderr = __init_darwin_FILE(stderr);

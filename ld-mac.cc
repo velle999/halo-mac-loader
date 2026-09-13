@@ -51,11 +51,7 @@
 #include <string>
 #include <vector>
 
-#ifdef USE_LIBCXX
 #include <unordered_map>
-#else
-#include <tr1/unordered_map>
-#endif
 
 #include "env_flags.h"
 #include "fat.h"
@@ -63,9 +59,6 @@
 #include "mach-o.h"
 
 using namespace std;
-#ifndef USE_LIBCXX
-using namespace std::tr1;
-#endif
 
 DEFINE_bool(TRACE_FUNCTIONS, false, "Show calling functions");
 DEFINE_bool(PRINT_TIME, false, "Print time spent in this loader");
@@ -196,18 +189,108 @@ static void initNoTrampoline() {
 #undef NO_TRAMPOLINE
 }
 
-static void undefinedFunction() {
-  fprintf(stderr, "Undefined function called\n");
-  abort();
-}
-
 static void doNothing() {
 }
 
-static bool lookupDyldFunction(const char* name, uint64_t* addr) {
+// A classic crt1 calls this through __DATA,__dyld with a pointer-sized out
+// parameter; a 64-bit write here overran its stack slot on i386. Module
+// initializers are run by runInitFuncs, so every dyld hook can do nothing.
+static bool lookupDyldFunction(const char* name, uintptr_t* addr) {
   LOG << "lookupDyldFunction: " << name << endl;
-  *addr = (int64_t)&doNothing;
+  *addr = (uintptr_t)&doNothing;
   return true;
+}
+
+// Imports nothing provides are bound into a PROT_NONE region, one slot per
+// symbol, so the first use -- a call through the jump table, a read through
+// __IMPORT,__pointers, a CFString isa -- faults at an address that names the
+// symbol. 16 bytes per slot leaves room for in-place addends (vtable+8).
+static const uintptr_t kUndefinedSlot = 16;
+static const size_t kUndefinedRegion = 1 << 16;
+static char* g_undefined_base;
+static vector<string> g_undefined_names;
+static map<string, size_t> g_undefined_index;
+
+static char* undefinedSymbolAddress(const string& name) {
+  if (!g_undefined_base) {
+    g_undefined_base = (char*)mmap(NULL, kUndefinedRegion, PROT_NONE,
+                                   MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE,
+                                   -1, 0);
+    if (g_undefined_base == MAP_FAILED) {
+      err(1, "mmap(undefined symbols)");
+    }
+  }
+  size_t index;
+  map<string, size_t>::const_iterator found = g_undefined_index.find(name);
+  if (found != g_undefined_index.end()) {
+    index = found->second;
+  } else {
+    index = g_undefined_names.size();
+    g_undefined_names.push_back(name);
+    g_undefined_index[name] = index;
+  }
+  CHECK((index + 1) * kUndefinedSlot <= kUndefinedRegion);
+  return g_undefined_base + index * kUndefinedSlot;
+}
+
+static const char* undefinedSymbolAt(uintptr_t addr) {
+  uintptr_t base = (uintptr_t)g_undefined_base;
+  if (!base || addr < base || addr >= base + kUndefinedRegion) {
+    return NULL;
+  }
+  size_t index = (addr - base) / kUndefinedSlot;
+  if (index >= g_undefined_names.size()) {
+    return NULL;
+  }
+  return g_undefined_names[index].c_str();
+}
+
+#ifndef __x86_64__
+// Names a classic i386 image imports that glibc spells differently.
+static const char* const kClassicRenames[][2] = {
+  // crt1 zeroes the variable; reads go through __error().
+  { "errno", "__darwin_errno_global" },
+  // operator new(unsigned long) and new[]: size_t is unsigned int on Linux.
+  { "_Znwm", "_Znwj" },
+  { "_Znam", "_Znaj" },
+};
+
+// glibc has these, but Darwin's structs or constants differ: sockaddr starts
+// with sin_len, and SOL_SOCKET, SO_* and FIONBIO have other values. Passing
+// them straight through would misbehave silently, so they stay undefined
+// until libmac translates them.
+static const char* const kDivergentAbi[] = {
+  "bind", "connect", "getsockname", "recvfrom", "sendto", "setsockopt",
+  "ioctl",
+};
+#endif
+
+// Overwrites an i386 __IMPORT,__jump_table entry with JMP rel32.
+static void writeJump(uintptr_t at, uintptr_t target) {
+  uintptr_t page = at & ~(uintptr_t)0xfff;
+  if (mprotect((void*)page, at + 5 - page,
+               PROT_READ | PROT_WRITE | PROT_EXEC)) {
+    err(1, "mprotect(jump table entry at %p)", (void*)at);
+  }
+  unsigned char* p = (unsigned char*)at;
+  int32_t rel = (int32_t)(target - (at + 5));
+  p[0] = 0xe9;
+  memcpy(p + 1, &rel, sizeof(rel));
+}
+
+static void reportMapFailure(const MachO& mach, const char* segment,
+                             uintptr_t vmaddr) {
+  int e = errno;
+  fprintf(stderr, "%s: cannot map %s at %p: %s\n",
+          mach.filename().c_str(), segment, (void*)vmaddr, strerror(e));
+  if (e == EPERM) {
+    fprintf(stderr, "  the address is below vm.mmap_min_addr "
+            "(cat /proc/sys/vm/mmap_min_addr)\n");
+  } else if (e == EEXIST) {
+    fprintf(stderr, "  something is already mapped there; "
+            "is the loader built -no-pie?\n");
+  }
+  exit(1);
 }
 
 static uint64_t alignMem(uint64_t p, uint64_t a) {
@@ -428,11 +511,13 @@ class MachOLoader {
       if (filesize == 0) {
         continue;
       }
+      // NOREPLACE: an unslid image landing on the loader or a library must
+      // fail here rather than overwrite it.
       void* mapped = mmap((void*)vmaddr, filesize, prot,
-                          MAP_PRIVATE | MAP_FIXED,
+                          MAP_PRIVATE | MAP_FIXED_NOREPLACE,
                           mach.fd(), mach.offset() + seg->fileoff);
       if (mapped == MAP_FAILED) {
-        err(1, "%s mmap(file) failed", mach.filename().c_str());
+        reportMapFailure(mach, name, vmaddr);
       }
 
       if (vmsize != filesize) {
@@ -443,10 +528,10 @@ class MachOLoader {
         CHECK(vmsize > filesize);
         void* mapped = mmap((void*)(vmaddr + filesize),
                             vmsize - filesize, prot,
-                            MAP_PRIVATE | MAP_FIXED | MAP_ANONYMOUS,
-                            0, 0);
+                            MAP_PRIVATE | MAP_FIXED_NOREPLACE | MAP_ANONYMOUS,
+                            -1, 0);
         if (mapped == MAP_FAILED) {
-          err(1, "%s mmap(anon) failed", mach.filename().c_str());
+          reportMapFailure(mach, name, vmaddr + filesize);
         }
       }
 
@@ -533,10 +618,24 @@ class MachOLoader {
         continue;
       }
 
-      if (bind->type == BIND_TYPE_POINTER) {
+      if (bind->type == BIND_TYPE_POINTER ||
+          bind->type == MachO::BIND_TYPE_JUMP_TABLE ||
+          bind->type == MachO::BIND_TYPE_EXTERNAL_RELOC) {
         string name = bind->name + 1;
         void** ptr = (void**)(bind->vmaddr + slide);
         char* sym = NULL;
+
+        // A stub or relocation for a weak symbol the image defines itself
+        // (a coalesced C++ template) binds to that definition.
+        if (bind->is_classic && bind->is_weak &&
+            bind->type != BIND_TYPE_POINTER) {
+          if (bind->type == MachO::BIND_TYPE_JUMP_TABLE) {
+            writeJump(bind->vmaddr + slide, (uintptr_t)bind->value);
+          } else {
+            *(uintptr_t*)ptr += (uintptr_t)bind->value;
+          }
+          continue;
+        }
 
         if (bind->is_weak) {
           if (last_weak_name == name) {
@@ -580,6 +679,13 @@ class MachOLoader {
                       SUF_UNIX03)) {
             name = name.substr(0, name.size() - SUF_UNIX03_LEN);
           }
+          for (size_t r = 0;
+               r < sizeof(kClassicRenames) / sizeof(kClassicRenames[0]); r++) {
+            if (name == kClassicRenames[r][0]) {
+              name = kClassicRenames[r][1];
+              break;
+            }
+          }
 #endif
 
           map<string, string>::const_iterator found =
@@ -595,7 +701,16 @@ class MachOLoader {
           if (export_found != exports_.end()) {
             sym = (char*)export_found->second.addr;
           }
-          if (!sym) {
+          bool divergent = false;
+#ifndef __x86_64__
+          for (size_t d = 0;
+               d < sizeof(kDivergentAbi) / sizeof(kDivergentAbi[0]); d++) {
+            if (name == kDivergentAbi[d]) {
+              divergent = true;
+            }
+          }
+#endif
+          if (!sym && !divergent) {
             sym = (char*)dlsym(RTLD_DEFAULT, name.c_str());
             if (!sym) {
               map<string, string>::const_iterator iter =
@@ -611,14 +726,23 @@ class MachOLoader {
             }
           }
           if (!sym) {
-            ERR << name << ": undefined symbol" << endl;
-            sym = (char*)&undefinedFunction;
+            LOG << name << ": undefined symbol" << endl;
+            sym = undefinedSymbolAddress(name);
           }
           sym += bind->addend;
         }
 
         LOG << "bind " << name << ": "
             << *ptr << " => " << (void*)sym << " @" << ptr << endl;
+
+        if (bind->type == MachO::BIND_TYPE_JUMP_TABLE) {
+          writeJump(bind->vmaddr + slide, (uintptr_t)sym);
+          continue;
+        }
+        if (bind->type == MachO::BIND_TYPE_EXTERNAL_RELOC) {
+          *(uintptr_t*)ptr += (uintptr_t)sym;
+          continue;
+        }
 
         if (FLAGS_TRACE_FUNCTIONS && !g_no_trampoline.count(name)) {
           LOG << "Generating trampoline for " << name << "..." << endl;
@@ -730,6 +854,11 @@ class MachOLoader {
 
     load(mach);
     setupDyldData(mach);
+    if (!g_undefined_names.empty()) {
+      fprintf(stderr, "ld-mac: %zu imports have no implementation yet; "
+              "the first one used will name itself\n",
+              g_undefined_names.size());
+    }
 
     g_file_map.addWatchDog(last_addr_ + 1);
 
@@ -801,6 +930,19 @@ class MachOLoader {
   set<string> loaded_dylibs_;
 };
 
+#ifndef __x86_64__
+// Switches to a prepared Darwin initial stack and jumps to the image's entry.
+extern "C" void ld_mac_jump_to_entry(uintptr_t* frame, uintptr_t entry)
+    __attribute__((noreturn));
+__asm__(".text\n"
+        ".globl ld_mac_jump_to_entry\n"
+        ".type ld_mac_jump_to_entry, @function\n"
+        "ld_mac_jump_to_entry:\n"
+        "  mov 8(%esp), %eax\n"
+        "  mov 4(%esp), %esp\n"
+        "  jmp *%eax\n");
+#endif
+
 void MachOLoader::boot(
     uint64_t entry, int argc, char** argv, char** envp) {
 #ifdef __x86_64__
@@ -829,20 +971,29 @@ void MachOLoader::boot(
                    :"%rax", "%rdx");
   //fprintf(stderr, "done!\n");
 #else
-  __asm__ volatile(" mov %1, %%eax;\n"
-                   " mov %2, %%edx;\n"
-                   " push $0;\n"
-                   ".loop32:\n"
-                   " sub $4, %%edx;\n"
-                   " push (%%edx);\n"
-                   " dec %%eax;\n"
-                   " jnz .loop32;\n"
-                   " mov %1, %%eax;\n"
-                   " push %%eax;\n"
-                   " jmp *%0;\n"
-                   // TODO(hamaji): Fix parameters
-                   ::"r"(entry), "r"(argc), "r"(argv + argc), "g"(envp)
-                   :"%eax", "%edx");
+  // A classic crt1 walks argc, argv, envp and then apple[] up the initial
+  // stack, laid out the way the Darwin kernel does it. Pushing argv alone
+  // left start's envp walk reading whatever lay above.
+  size_t envc = 0;
+  while (envp[envc]) {
+    envc++;
+  }
+  size_t words = 1 + argc + 1 + envc + 1 + 2;
+  uintptr_t* frame =
+      (uintptr_t*)__builtin_alloca(words * sizeof(uintptr_t));
+  size_t n = 0;
+  frame[n++] = argc;
+  for (int i = 0; i < argc; i++) {
+    frame[n++] = (uintptr_t)argv[i];
+  }
+  frame[n++] = 0;
+  for (size_t i = 0; i < envc; i++) {
+    frame[n++] = (uintptr_t)envp[i];
+  }
+  frame[n++] = 0;
+  frame[n++] = (uintptr_t)g_darwin_executable_path;
+  frame[n++] = 0;
+  ld_mac_jump_to_entry(frame, (uintptr_t)entry);
 #endif
 }
 
@@ -876,9 +1027,60 @@ extern "C" {
   }
 }
 
+#ifndef __x86_64__
+// A fault in the Mac image. Names the import when the address is one of the
+// undefined-symbol slots, then walks the image's frame-pointer chain, which
+// glibc's backtrace() cannot see.
+static void reportClassicFault(int signum, siginfo_t* siginfo,
+                               ucontext_t* uc) {
+  greg_t* r = uc->uc_mcontext.gregs;
+  uintptr_t eip = r[REG_EIP];
+  uintptr_t esp = r[REG_ESP];
+  uintptr_t ebp = r[REG_EBP];
+  uintptr_t fault = (uintptr_t)siginfo->si_addr;
+  fflush(stdout);
+  fprintf(stderr, "\n%s at eip %p, fault address %p\n",
+          strsignal(signum), (void*)eip, (void*)fault);
+  const char* name = undefinedSymbolAt(eip);
+  if (name) {
+    fprintf(stderr, "UNIMPLEMENTED: %s called from %p\n",
+            name, (void*)*(uintptr_t*)esp);
+  } else if ((name = undefinedSymbolAt(fault)) != NULL) {
+    fprintf(stderr, "UNIMPLEMENTED: %s+%lu used as data at eip %p\n",
+            name,
+            (unsigned long)((fault - (uintptr_t)g_undefined_base) %
+                            kUndefinedSlot),
+            (void*)eip);
+  }
+  fprintf(stderr,
+          "eax %08lx ebx %08lx ecx %08lx edx %08lx\n"
+          "esi %08lx edi %08lx ebp %08lx esp %08lx\n",
+          (unsigned long)r[REG_EAX], (unsigned long)r[REG_EBX],
+          (unsigned long)r[REG_ECX], (unsigned long)r[REG_EDX],
+          (unsigned long)r[REG_ESI], (unsigned long)r[REG_EDI],
+          (unsigned long)ebp, (unsigned long)esp);
+  fprintf(stderr, "return addresses (ebp chain):\n");
+  for (int depth = 0; depth < 32; depth++) {
+    if (ebp < esp || ebp >= esp + (8 << 20) || (ebp & 3)) {
+      break;
+    }
+    uintptr_t* frame = (uintptr_t*)ebp;
+    fprintf(stderr, "  %p\n", (void*)frame[1]);
+    if (frame[0] <= ebp) {
+      break;
+    }
+    ebp = frame[0];
+  }
+  _exit(128 + signum);
+}
+#endif
+
 /* signal handler for fatal errors */
 static void handleSignal(int signum, siginfo_t* siginfo, void* vuc) {
   ucontext_t *uc = (ucontext_t*)vuc;
+#ifndef __x86_64__
+  reportClassicFault(signum, siginfo, uc);
+#endif
   void* pc = (void*)uc->uc_mcontext.gregs[
 #ifdef __x86_64__
     REG_RIP

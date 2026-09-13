@@ -18,3 +18,10 @@
 ehthumbs.db
 Icon?
 Thumbs.db
+
+# Build outputs
+ld-mac
+extract
+macho2elf
+*.d
+build.log
