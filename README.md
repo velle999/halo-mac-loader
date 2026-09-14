@@ -18,10 +18,11 @@ startup checks (CPU, memory, QuickTime and OpenGL versions, an OpenGL context
 probe, video memory, disk space), finds its disc, shows its EULA and asks for
 its product key, which are answered without being shown (see
 Configuration), loads its maps and shaders, and draws its main menu, with
-its music: 30 frames a second in an 800x600 window on a Pentium 4 with a
-GeForce 7600 GS and NVIDIA's 304 driver. Its campaign has been played there
-for an hour at a stretch, and its time demo runs at 31 to 59 frames a
-second. The intro movies are not implemented.
+its music. On a Pentium 4 with a GeForce 7600 GS and NVIDIA's 304 driver its
+campaign has been played for an hour at a stretch, full screen and in a
+window, and its time demo runs at 38 to 68 frames a second. Loading a new
+part of a level still stalls a frame for a tenth of a second or more. The
+intro movies are not implemented.
 
 An import with no implementation is bound to a guard page, so its first use
 stops the program with its name, its caller and the registers.
@@ -58,7 +59,9 @@ executables at 0x400000, which is inside the game's image.
   It appears as a mounted CD named after the directory (the Mac release's is
   `Halo Universal`), or after `HLE_CD_NAME` when that is set.
 - `HLE_WINDOWED=1` plays in a window rather than changing the screen's mode,
-  and ticks the game's own "Play in a window" setting.
+  and ticks the game's own "Play in a window" setting; `HLE_WINDOWED=0`
+  unticks it, for full screen. Without either, the game's saved setting
+  stands.
 - `HLE_VRAM_MB` is the video memory the renderer reports, 256 by default.
 - `HLE_SOUND=0` keeps the game silent. Otherwise its sound goes to SDL's
   default audio device, or to the one `SDL_AUDIODRIVER` names.
@@ -95,21 +98,23 @@ executables at 0x400000, which is inside the game's image.
   time divides (the game's thread on the CPU, all threads on the CPU with the
   sound mixer's, and waiting in the swap), and how many times a GL context
   was made current somewhere new, each a round trip to the X server.
-  `HLE_GL_STATS=1`
-  adds the game's draw calls, vertices and indices, texture uploads and
-  copies, `glFinish`, `glFlush` and `glReadPixels` calls, texture binds and
-  ARB program parameters per frame.
-- `HLE_PROFILE=<file>` samples, from the first frame to the exit, where each
-  millisecond of CPU time goes and which of the game's functions led there,
-  and writes the counts to that file. `tools/profile_report.py <file>
-  <disassembly>` sums them up by thread, library and function.
+  `HLE_GL_STATS=1` adds the game's draw calls, vertices and indices, texture
+  uploads and copies, `glFinish`, `glFlush` and `glReadPixels` calls, texture
+  binds and ARB program parameters per frame.
+- `HLE_PROFILE=<file>` samples, from the first frame, where each millisecond
+  of CPU time goes and which of the game's functions led there, and writes
+  the counts to that file at the exit, or at a crash.
+  `tools/profile_report.py <file> <disassembly>` sums them up by thread,
+  library and function.
+- `HLE_VAR=0` leaves out the emulated vertex array extensions (see Windows,
+  graphics, input and sound).
 - `HLE_RECOVER=0` lets the game's own fault (see Status) stop it with a crash
   report instead of stepping over it.
 - `HLE_GAME_NICE` is how far the game's main thread gives way to the sound
   mixer's thread: a nice value added to it once the audio device is open, 4
-  by default, 0 for none. The kernel weighs it against the game's own threads
-  only. Without real-time priority for the mixer, a mixer that runs late
-  while the game draws makes the sound pop.
+  by default, 0 for none. With the kernel's autogroup scheduling it weighs
+  only against the game's own threads. Without real-time priority for the
+  mixer, a mixer that runs late while the game draws makes the sound pop.
 
 ## CoreFoundation
 
@@ -158,7 +163,11 @@ bundles and localized strings, preferences, UUIDs and character sets.
   described is one accelerated NVIDIA renderer.
 - AGL pbuffers are framebuffer objects: the texture `aglTexImagePBuffer`
   names is the pbuffer's image, and `aglSetPBuffer` draws into it. Without
-  them Halo drew a 128x128 effect texture into a corner of the screen.
+  them Halo drew a 128x128 effect texture into a corner of the screen. After
+  each pbuffer it draws in, the game detaches its window from the context and
+  attaches it again. A detached context stays bound to its window meanwhile,
+  as moving it cost two round trips to the X server each time, and a window
+  destroyed first moves its contexts to a hidden window.
 - The game copies `GL_EXTENSIONS` into a 4096-byte buffer, which a newer
   driver's list overruns, so it sees only the extensions whose names its
   executable contains, plus `GL_EXT_texture_rectangle` where the driver has
@@ -187,7 +196,7 @@ bundles and localized strings, preferences, UUIDs and character sets.
   ranges they keep.
 - Displays, their modes and the main GDevice describe SDL's display 0. A mode
   switch resizes the game's window, and a window covering a captured display
-  goes full screen unless `HLE_WINDOWED` is set. Gamma tables are recorded,
+  goes full screen unless `HLE_WINDOWED` is 1. Gamma tables are recorded,
   not applied.
 - Windows, controls and menus come from the application's NIB
   (`objects.xib`) and are kept as records the game queries; only a window the
@@ -233,10 +242,16 @@ bundles and localized strings, preferences, UUIDs and character sets.
 - `libmac` additions for 10.4-era executables: `__sF`, keymgr, the `errno`
   variable, `bootstrap_port`, a monotonic `mach_absolute_time`.
 - An unimplemented import stops the program with its name, its caller, the
-  registers and the frame-pointer chain.
+  registers and the frame-pointer chain. Any other fault is reported the same
+  way, with the mappings that hold the faulting code and address and the code
+  addresses found on the stack.
 - A fixed `mmap` that replaces memory mapped by something other than the
   program says so on stderr, with the mappings it replaces; Linux replaces
   them silently.
+- glibc's allocator keeps every block in the heap, never gives the heap back,
+  and grows it 64 MB at a time. The game draws a little past the ends of its
+  vertex buffers, and NVIDIA's driver, copying them, faulted where a buffer
+  ended at the top of the heap.
 - `sysctl` and `sysctlbyname` answer as a 10.4.9 Intel Mac with this
   machine's CPU and memory; maloader's `sysctl` aborted on most queries.
 - Lookups the program makes at run time, through
