@@ -89,8 +89,18 @@ executables at 0x400000, which is inside the game's image.
   game calls it, with the address of the call, and `LD_MAC_TRACE_IMPORTS=all`
   logs every call.
 - `HLE_FRAME_DUMP=<directory>` saves the first frame the game draws, and
-  every 600th after it, to `frame-<n>.ppm` in that directory. With
-  `HLE_TRACE=1`, each of those frames also logs the frame rate.
+  every 600th after it, to `frame-<n>.ppm` in that directory.
+- With `HLE_TRACE=1`, every 600th frame logs the frame rate over the last
+  600, the longest frame and how many took over 50 and 100 ms, and how a
+  frame's time divides: the game's thread on the CPU, all threads on the CPU
+  (the sound mixer's included), and waiting in the swap. `HLE_GL_STATS=1`
+  adds the game's draw calls, vertices and indices, texture uploads and
+  copies, `glFinish`, `glFlush` and `glReadPixels` calls, texture binds and
+  ARB program parameters per frame.
+- `HLE_PROFILE=<file>` samples, from the first frame to the exit, where each
+  millisecond of CPU time goes and which of the game's functions led there,
+  and writes the counts to that file. `tools/profile_report.py <file>
+  <disassembly>` sums them up by thread, library and function.
 - `HLE_RECOVER=0` lets the game's own fault (see Status) stop it with a crash
   report instead of stepping over it.
 
@@ -186,6 +196,10 @@ bundles and localized strings, preferences, UUIDs and character sets.
 - `tools/import_walk.py DISASSEMBLY ADDR [DEPTH] [IMPLEMENTED]` lists the
   imports a function reaches, in the order a walk meets them, marking the
   ones with no implementation.
+- `tools/profile_report.py PROFILE DISASSEMBLY [ROWS]` sums up an
+  `HLE_PROFILE` file: CPU time by thread and by mapping, the functions and
+  library symbols that took the most, and for time spent outside the game,
+  the game's functions that called out.
 
 ## Changes from maloader
 

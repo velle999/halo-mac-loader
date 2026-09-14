@@ -21,12 +21,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include <SDL2/SDL.h>
 
 #include "arb_program.h"
 #include "gl_dispatch.h"
+#include "gl_stats.h"
 #include "gui.h"
+#include "profile.h"
 
 enum {
   kMagicPixelFormat = 'pixf',
@@ -296,7 +299,7 @@ static void* lookup_gl(const char* name) {
   if (!strcmp(name, "glProgramStringARB")) {
     return __darwin_glProgramStringARB;
   }
-  return dlsym(RTLD_DEFAULT, name);
+  return hle_gl_stats_wrap(name, dlsym(RTLD_DEFAULT, name));
 }
 
 // ---------------------------------------------------------------------------
@@ -805,6 +808,12 @@ static void dump_frame(hle_gl_context* c, unsigned frame) {
   free(pixels);
 }
 
+static double clock_seconds(clockid_t clock) {
+  struct timespec ts;
+  clock_gettime(clock, &ts);
+  return ts.tv_sec + ts.tv_nsec / 1e9;
+}
+
 void aglSwapBuffers(void* ctx) {
   hle_gl_context* c = context_of(ctx);
   if (!c) {
@@ -818,34 +827,68 @@ void aglSwapBuffers(void* ctx) {
     // A pbuffer has one buffer; there is nothing to swap.
     return;
   }
+  // HLE_PROFILE starts at the first frame, from the game's call.
+  hle_profile_start(__builtin_return_address(0));
   static unsigned swaps;
   static Uint32 traced_at;
   static Uint32 last_swap;
   static Uint32 longest;  // between two swaps since the last trace, in ms
+  static unsigned over_50;
+  static unsigned over_100;
+  static double swapping;  // seconds in SDL_GL_SwapWindow since the trace
+  static double traced_wall;
+  static double traced_thread_cpu;
+  static double traced_process_cpu;
   int traced = ++swaps == 1 || swaps % kFramesPerTrace == 0;
   if (traced) {
     dump_frame(c, swaps);
   }
+  double before = clock_seconds(CLOCK_MONOTONIC);
   SDL_GL_SwapWindow(c->window);
+  double after = clock_seconds(CLOCK_MONOTONIC);
+  swapping += after - before;
   Uint32 now = SDL_GetTicks();
-  if (last_swap && now - last_swap > longest) {
-    longest = now - last_swap;
+  if (last_swap) {
+    Uint32 frame = now - last_swap;
+    longest = frame > longest ? frame : longest;
+    over_50 += frame > 50;
+    over_100 += frame > 100;
   }
   last_swap = now;
   if (traced) {
+    double thread_cpu = clock_seconds(CLOCK_THREAD_CPUTIME_ID);
+    double process_cpu = clock_seconds(CLOCK_PROCESS_CPUTIME_ID);
+    // The frames since the last trace.
+    unsigned frames = swaps == 1                 ? 1
+                      : swaps == kFramesPerTrace ? kFramesPerTrace - 1
+                                                 : kFramesPerTrace;
+    char gl_counts[512];
+    hle_gl_stats_take(gl_counts, sizeof(gl_counts), frames);
     if (swaps == 1) {
       cf_trace("aglSwapBuffers: frame 1");
     } else {
-      // The frames since the last trace, over the time they took.
-      unsigned frames =
-          swaps == kFramesPerTrace ? kFramesPerTrace - 1 : kFramesPerTrace;
       Uint32 elapsed = now - traced_at;
+      double ms = 1000.0 / frames;
+      // Where a frame's time goes: this thread, the game's, working; every
+      // thread working, the sound mixer's included; and waiting in the swap.
       cf_trace("aglSwapBuffers: frame %u, %.1f frames a second, the longest "
-               "%u ms", swaps, frames * 1000.0 / (elapsed ? elapsed : 1),
-               longest);
+               "%u ms, %u over 50 ms and %u over 100; a frame takes %.1f ms, "
+               "%.1f of them on this thread's CPU and %.1f on all threads', "
+               "%.1f in the swap%s",
+               swaps, frames * 1000.0 / (elapsed ? elapsed : 1), longest,
+               over_50, over_100, (after - traced_wall) * ms,
+               (thread_cpu - traced_thread_cpu) * ms,
+               (process_cpu - traced_process_cpu) * ms, swapping * ms,
+               gl_counts);
     }
     traced_at = now;
     longest = 0;
+    over_50 = 0;
+    over_100 = 0;
+    swapping = 0;
+    traced_wall = after;
+    traced_thread_cpu = thread_cpu;
+    traced_process_cpu = process_cpu;
   }
 }
 

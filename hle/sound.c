@@ -30,6 +30,7 @@
 #include <SDL2/SDL.h>
 
 #include "carbon.h"
+#include "profile.h"
 #include "sound_mix.h"
 
 enum {
@@ -400,6 +401,7 @@ static void count_mix(uint64_t start, int frames, unsigned clipped,
 }
 
 static void mix(void* userdata, Uint8* stream, int length) {
+  hle_profile_thread();
   uint64_t start = now_ns();
   int16_t* out = (int16_t*)stream;
   int frames = length / 4;
