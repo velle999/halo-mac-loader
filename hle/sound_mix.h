@@ -126,4 +126,9 @@ int hle_sound_voice_mix(hle_sound_voice* voice, int32_t* mix, int frames,
 // UINT64_MAX while its rate multiplier holds it.
 uint64_t hle_sound_voice_remaining_ns(const hle_sound_voice* voice);
 
+// The voices' sum as an output sample. A sum within three quarters of full
+// scale passes unchanged, and a louder one bends smoothly toward full scale,
+// where clipping it would crackle.
+int16_t hle_sound_limit(int32_t sum);
+
 #endif  // HLE_SOUND_MIX_H_

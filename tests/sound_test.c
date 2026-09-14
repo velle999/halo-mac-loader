@@ -216,6 +216,29 @@ int main(void) {
             kHleSoundBadHeader,
         "an unknown encode is refused");
 
+  check(hle_sound_limit(0) == 0 && hle_sound_limit(1000) == 1000 &&
+            hle_sound_limit(24576) == 24576 &&
+            hle_sound_limit(-24576) == -24576,
+        "sums up to the knee pass unchanged");
+  check(hle_sound_limit(32767) > 24576 && hle_sound_limit(32767) < 32767,
+        "a full-scale sum is bent below full scale");
+  int rising = 1;
+  int16_t last = 0;
+  for (int32_t sum = 0; sum <= 2000000; sum += 97) {
+    int16_t limited = hle_sound_limit(sum);
+    rising &= limited >= last && limited <= 32767 &&
+              hle_sound_limit(-sum) == -limited;
+    last = limited;
+  }
+  check(rising, "the limiter rises with the sum, below full scale, and is "
+        "symmetric");
+  int above_knee = hle_sound_limit(24676) - hle_sound_limit(24576);
+  check(above_knee >= 95 && above_knee <= 100,
+        "the curve leaves the knee at nearly the slope it had");
+  check(hle_sound_limit(INT32_MAX) <= 32767 &&
+            hle_sound_limit(INT32_MIN) >= -32767,
+        "the largest sums stay in range");
+
   if (failures == 0) {
     printf("all passed\n");
   }

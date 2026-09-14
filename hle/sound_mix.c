@@ -203,3 +203,19 @@ uint64_t hle_sound_voice_remaining_ns(const hle_sound_voice* voice) {
                 (voice->rate_multiplier / 65536.0);
   return (uint64_t)(frames / rate * 1e9);
 }
+
+int16_t hle_sound_limit(int32_t sum) {
+  enum {
+    kKnee = 24576,
+    kRoom = 32767 - kKnee,
+  };
+  int64_t magnitude = sum < 0 ? -(int64_t)sum : sum;
+  if (magnitude <= kKnee) {
+    return (int16_t)sum;
+  }
+  // Above the knee the slope starts at 1 and falls, and the curve nears
+  // full scale without reaching it.
+  int64_t over = magnitude - kKnee;
+  int32_t bent = kKnee + (int32_t)(over * kRoom / (over + kRoom));
+  return (int16_t)(sum < 0 ? -bent : bent);
+}

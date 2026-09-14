@@ -105,6 +105,11 @@ executables at 0x400000, which is inside the game's image.
   <disassembly>` sums them up by thread, library and function.
 - `HLE_RECOVER=0` lets the game's own fault (see Status) stop it with a crash
   report instead of stepping over it.
+- `HLE_GAME_NICE` is how far the game's main thread gives way to the sound
+  mixer's thread: a nice value added to it once the audio device is open, 4
+  by default, 0 for none. The kernel weighs it against the game's own threads
+  only. Without real-time priority for the mixer, a mixer that runs late
+  while the game draws makes the sound pop.
 
 ## CoreFoundation
 
@@ -184,8 +189,9 @@ bundles and localized strings, preferences, UUIDs and character sets.
 - Sound Manager channels play through one SDL audio device. A channel's
   buffers are mixed at their own rate times the channel's rate multiplier,
   with its volume and amplitude, and commands queued behind a buffer wait
-  until it has played. Uncompressed 16-bit samples are little-endian, as on
-  an Intel Mac; compressed formats are silent.
+  until it has played. A sum past three quarters of full scale bends toward
+  full scale instead of clipping. Uncompressed 16-bit samples are
+  little-endian, as on an Intel Mac; compressed formats are silent.
   `make tests/sound_test && tests/sound_test` checks the mixing.
 - QuickTime reports no movies, so the intro is skipped. IOKit shows the
   disc and no HID devices.

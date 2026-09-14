@@ -21,11 +21,14 @@
 
 #define _GNU_SOURCE
 
+#include <errno.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <time.h>
+#include <unistd.h>
 
 #include <SDL2/SDL.h>
 
@@ -421,11 +424,11 @@ static void mix(void* userdata, Uint8* stream, int length) {
     }
     for (int i = 0; i < 2 * n; i++) {
       int32_t sum = sums[i];
+      // Counted as clipped: a sum past full scale, which the limiter bent.
       if (sum > 32767 || sum < -32768) {
         clipped++;
-        sum = sum > 32767 ? 32767 : -32768;
       }
-      out[2 * done + i] = sum;
+      out[2 * done + i] = hle_sound_limit(sum);
     }
     done += n;
   }
@@ -485,6 +488,25 @@ static void open_device(void) {
   SDL_PauseAudioDevice(device, 0);
   cf_trace("sound: %s, %d Hz, %d frames a callback",
            SDL_GetCurrentAudioDriver(), have.freq, have.samples);
+  // With no real-time priority for the mixer's thread, the game's main
+  // thread, which takes all the CPU it gets, gives way to it instead: on a
+  // Pentium 4 the mixer ran late while the game drew, and the sound popped.
+  // Threads made before now, SDL's audio thread among them, keep their
+  // priority; threads the main thread makes later take its new one. The
+  // kernel weighs a process's threads against each other, not against other
+  // programs. HLE_GAME_NICE is how far it gives way, 4 by default, and 0
+  // leaves it alone.
+  const char* setting = getenv("HLE_GAME_NICE");
+  int give_way = setting ? atoi(setting) : 4;
+  errno = 0;
+  int nice = getpriority(PRIO_PROCESS, getpid());
+  if (give_way > 0 && errno == 0) {
+    int wanted = nice + give_way > 19 ? 19 : nice + give_way;
+    if (setpriority(PRIO_PROCESS, getpid(), wanted) == 0) {
+      cf_trace("sound: the game's main thread runs at nice %d, the mixer's "
+               "at %d", wanted, nice);
+    }
+  }
 }
 
 static void choose_clock(void) {
