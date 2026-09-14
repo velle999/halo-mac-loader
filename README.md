@@ -93,12 +93,14 @@ executables at 0x400000, which is inside the game's image.
   logs every call.
 - `HLE_FRAME_DUMP=<directory>` saves the first frame the game draws, and
   every 600th after it, to `frame-<n>.ppm` in that directory.
-- Print Screen saves the next frame the game draws as a BMP file in the
-  directory `HLE_SCREENSHOTS` names, `~/halo-screenshots` by default; the
-  game's own screenshots need a command-line switch its Mac startup never
-  passes. `HLE_SCREENSHOT_FRAME=<n>` saves the nth frame, for runs with
-  nobody at the keyboard. Print Screen, Scroll Lock and Pause reach the game
-  as F13, F14 and F15, the keys a Mac keyboard has there.
+- Scroll Lock saves the next frame the game draws as a BMP file in the
+  directory `HLE_SCREENSHOTS` names, `~/halo-screenshots` by default, and so
+  does Print Screen where the desktop leaves it to the window (XFCE opens its
+  own screenshot dialog on Print Screen). The game's own screenshots need a
+  command-line switch its Mac startup never passes.
+  `HLE_SCREENSHOT_FRAME=<n>` saves the nth frame, for runs with nobody at the
+  keyboard. Print Screen, Scroll Lock and Pause reach the game as F13, F14 and
+  F15, the keys a Mac keyboard has there.
 - With `HLE_TRACE=1`, every 600th frame logs the frame rate over the last
   600, the longest frame and how many took over 50 and 100 ms, how a frame's
   time divides (the game's thread on the CPU, all threads on the CPU with the

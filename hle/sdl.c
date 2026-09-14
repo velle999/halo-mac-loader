@@ -336,8 +336,12 @@ static void release_all_keys(void) {
 }
 
 static void post_key(const SDL_KeyboardEvent* e) {
+  // Scroll Lock takes a screenshot, and so does Print Screen where the desktop
+  // leaves that key to the window: XFCE opens its own screenshot dialog on
+  // it, which takes the focus and minimizes a full-screen game.
   if (e->type == SDL_KEYDOWN && !e->repeat &&
-      e->keysym.scancode == SDL_SCANCODE_PRINTSCREEN) {
+      (e->keysym.scancode == SDL_SCANCODE_SCROLLLOCK ||
+       e->keysym.scancode == SDL_SCANCODE_PRINTSCREEN)) {
     hle_screenshot_request();
   }
   int code = mac_key(e->keysym.scancode);
