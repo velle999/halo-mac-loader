@@ -18,13 +18,19 @@
 // those the last one had and it lacks. What GL has is mirrored, so that only
 // the arrays that differ are set.
 //
-// Memory in a range is uploaded as it is flushed, one buffer object for each
+// A range's storage hint says what a flush means. GL_STORAGE_CACHED_APPLE
+// memory is copied to the GPU as it is flushed, and the game flushes all it
+// writes there, so such a range is uploaded to buffer objects: one for each
 // span a flush names, as the game keeps many buffers in one range, and a
 // buffer object written while the GPU reads it makes the driver wait. A span
-// flushed whole gets a new store, which nothing waits for. An array pointer
-// into a flushed span of a range with GL_VERTEX_ARRAY_RANGE_APPLE enabled
-// becomes an offset into the span's buffer object. Fences are always
-// finished, as the GPU never reads the game's memory.
+// flushed whole gets a new store, which nothing waits for. With the default,
+// GL_STORAGE_CLIENT_APPLE, or GL_STORAGE_SHARED_APPLE, the GPU reads the
+// game's memory itself, the game does not flush all it writes, and effects
+// drawn from buffer objects came out stale, smeared through walls; those
+// ranges stay client arrays. An array pointer into a flushed span of a
+// cached range with GL_VERTEX_ARRAY_RANGE_APPLE enabled becomes an offset
+// into the span's buffer object. Fences are always finished, as the GPU
+// never reads the game's memory.
 //
 // A buffer object whose span goes is kept, emptied, for a later span: an
 // array still pointing into a deleted one would become a client pointer to a
@@ -57,11 +63,10 @@ enum {
   GL_TEXTURE0 = 0x84C0,
   GL_VERTEX_ARRAY_RANGE_APPLE = 0x851D,
   GL_VERTEX_ARRAY_STORAGE_HINT_APPLE = 0x851F,
+  GL_STORAGE_CLIENT_APPLE = 0x85B4,
   GL_STORAGE_CACHED_APPLE = 0x85BE,
-  GL_STORAGE_SHARED_APPLE = 0x85BF,
   GL_ARRAY_BUFFER_ARB = 0x8892,
   GL_STATIC_DRAW_ARB = 0x88E4,
-  GL_DYNAMIC_DRAW_ARB = 0x88E8,
 };
 
 // The client arrays mirrored: the fixed ones, texture coordinates for each
@@ -220,18 +225,16 @@ static int push(uint32_t** stack, uint32_t* count, uint32_t* capacity,
 }
 
 static var_object* object_of(uint32_t name) {
-  if (!object_slots && !grow(&objects, &object_slots, 1, sizeof(*objects))) {
-    return NULL;
+  if (!object_slots) {
+    if (!grow(&objects, &object_slots, 1, sizeof(*objects))) {
+      return NULL;
+    }
+    objects[0].hint = GL_STORAGE_CLIENT_APPLE;
   }
   if (name == 0) {
     return &objects[0];
   }
   return name < object_slots && objects[name].named ? &objects[name] : NULL;
-}
-
-static uint32_t usage_of(const var_object* o) {
-  return o->hint == GL_STORAGE_SHARED_APPLE ? GL_DYNAMIC_DRAW_ARB
-                                            : GL_STATIC_DRAW_ARB;
 }
 
 // ---------------------------------------------------------------------------
@@ -261,7 +264,8 @@ static const void* translate(const void* pointer, uint32_t* buffer) {
   }
   const hle_var_range* range =
       hle_var_ranges_find(&ranges, (uintptr_t)pointer);
-  if (!range || !objects[range->value].range_enabled) {
+  if (!range || !objects[range->value].range_enabled ||
+      objects[range->value].hint != GL_STORAGE_CACHED_APPLE) {
     return pointer;
   }
   const hle_var_range* span =
@@ -446,28 +450,34 @@ static void drop_spans(uintptr_t base, size_t length, uintptr_t* low,
   }
 }
 
+static void drop_spans_of(var_object* o) {
+  uintptr_t low = UINTPTR_MAX;
+  uintptr_t high = 0;
+  if (o->length) {
+    drop_spans(o->base, o->length, &low, &high);
+  }
+}
+
 static void drop_range(var_object* o) {
   if (!o->length) {
     return;
   }
   hle_var_ranges_remove(&ranges, o->base, NULL);
-  uintptr_t low = UINTPTR_MAX;
-  uintptr_t high = 0;
-  drop_spans(o->base, o->length, &low, &high);
+  drop_spans_of(o);
   o->base = 0;
   o->length = 0;
 }
 
-// Uploads [start, end), within a range of |usage|, to the span holding it or
-// to a new span covering it and the spans it touches.
-static void upload(uintptr_t start, uintptr_t end, uint32_t usage) {
+// Uploads [start, end) of a cached range to the span holding it, or to a new
+// span covering it and the spans it touches.
+static void upload(uintptr_t start, uintptr_t end) {
   const hle_var_range* found = hle_var_ranges_find(&span_map, start);
   if (found && end <= found->base + found->length) {
     const var_span* s = &spans[found->value];
     bind_array_buffer(s->buffer);
     if (start == s->base && end == s->base + s->length) {
       gl.buffer_data(GL_ARRAY_BUFFER_ARB, s->length, (const void*)s->base,
-                     usage);
+                     GL_STATIC_DRAW_ARB);
     } else {
       gl.buffer_sub_data(GL_ARRAY_BUFFER_ARB, start - s->base, end - start,
                          (const void*)start);
@@ -487,7 +497,8 @@ static void upload(uintptr_t start, uintptr_t end, uint32_t usage) {
   uint32_t buffer = take_buffer();
   bind_array_buffer(buffer);
   gl.get_error();
-  gl.buffer_data(GL_ARRAY_BUFFER_ARB, high - low, (const void*)low, usage);
+  gl.buffer_data(GL_ARRAY_BUFFER_ARB, high - low, (const void*)low,
+                 GL_STATIC_DRAW_ARB);
   if (!buffer || gl.get_error() != GL_NO_ERROR ||
       !hle_var_ranges_add(&span_map, low, high - low, id)) {
     fprintf(stderr, "hle: %lu bytes of a vertex array range stay in client "
@@ -502,8 +513,8 @@ static void upload(uintptr_t start, uintptr_t end, uint32_t usage) {
   }
   spans[id] = (var_span){ low, high - low, buffer };
   if (++spans_made == 1) {
-    cf_trace("vertex array ranges are buffer objects, flushed span by span: "
-             "%lu bytes in the first", (unsigned long)(high - low));
+    cf_trace("cached vertex array ranges are buffer objects, flushed span by "
+             "span: %lu bytes in the first", (unsigned long)(high - low));
   }
   // Arrays pointing here can use it now, and none may use a span dropped.
   apply_bound();
@@ -525,9 +536,7 @@ static void vertex_array_range(int32_t length, const void* pointer) {
         &ranges, (uintptr_t)pointer, length, names, 64);
     for (size_t i = 0; i < taken && i < 64; i++) {
       var_object* other = &objects[names[i]];
-      uintptr_t low = UINTPTR_MAX;
-      uintptr_t high = 0;
-      drop_spans(other->base, other->length, &low, &high);
+      drop_spans_of(other);
       other->base = 0;
       other->length = 0;
     }
@@ -543,7 +552,7 @@ static void flush_vertex_array_range(int32_t length, const void* pointer) {
   const hle_var_range* range =
       length > 0 && pointer ? hle_var_ranges_find(&ranges, (uintptr_t)pointer)
                             : NULL;
-  if (!range) {
+  if (!range || objects[range->value].hint != GL_STORAGE_CACHED_APPLE) {
     return;
   }
   uintptr_t start = (uintptr_t)pointer;
@@ -552,14 +561,21 @@ static void flush_vertex_array_range(int32_t length, const void* pointer) {
   if (end > range_end || end < start) {
     end = range_end;
   }
-  upload(start, end, usage_of(&objects[range->value]));
+  upload(start, end);
 }
 
 static void vertex_array_parameteri(uint32_t pname, int32_t param) {
   var_object* o = object_of(bound);
-  if (o && pname == GL_VERTEX_ARRAY_STORAGE_HINT_APPLE) {
-    o->hint = param;
+  if (!o || pname != GL_VERTEX_ARRAY_STORAGE_HINT_APPLE ||
+      o->hint == (uint32_t)param) {
+    return;
   }
+  o->hint = param;
+  if (param != GL_STORAGE_CACHED_APPLE) {
+    // What was uploaded for it is no longer what the GPU reads.
+    drop_spans_of(o);
+  }
+  apply_bound();
 }
 
 // ---------------------------------------------------------------------------
@@ -721,7 +737,7 @@ static void gen_vertex_arrays(int32_t n, uint32_t* names) {
     }
     memset(&objects[name], 0, sizeof(objects[name]));
     objects[name].named = 1;
-    objects[name].hint = GL_STORAGE_CACHED_APPLE;
+    objects[name].hint = GL_STORAGE_CLIENT_APPLE;
     names[i] = name;
   }
 }

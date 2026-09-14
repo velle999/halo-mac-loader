@@ -177,9 +177,12 @@ bundles and localized strings, preferences, UUIDs and character sets.
   driver client arrays, which NVIDIA's driver copies on the CPU for every
   draw. Those two and `GL_APPLE_vertex_array_object` are emulated with ARB
   buffer objects: a vertex array object keeps its own client arrays, what the
-  game flushes from a range goes to a buffer object for that span, and an
-  array pointer into a flushed span reads from its buffer object. On a
-  Pentium 4 the time demo runs 20 to 35% faster with them. `HLE_VAR=0` leaves
+  game flushes from a range it marked for caching on the GPU goes to a buffer
+  object for that span, and an array pointer into a flushed span reads from
+  its buffer object. Ranges left to Apple's default or marked shared, whose
+  memory the Mac's GPU read directly and the game did not always flush, stay
+  client arrays; as buffer objects their effects smeared through walls. On a
+  Pentium 4 the time demo runs 10 to 35% faster with them. `HLE_VAR=0` leaves
   them out. `make tests/var_ranges_test && tests/var_ranges_test` checks the
   ranges they keep.
 - Displays, their modes and the main GDevice describe SDL's display 0. A mode
