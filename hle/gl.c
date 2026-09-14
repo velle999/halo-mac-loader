@@ -28,6 +28,7 @@
 #include "arb_program.h"
 #include "gl_dispatch.h"
 #include "gl_stats.h"
+#include "gl_var.h"
 #include "gui.h"
 #include "profile.h"
 
@@ -217,6 +218,12 @@ static const char* game_extensions(const char* all) {
       cf_buf_appends(&out, kExtRectangle);
       cf_buf_append(&out, " ", 1);
     }
+    // Apple's vertex array range and fence, over buffer objects (gl_var.c).
+    static const char kArbBuffers[] = "GL_ARB_vertex_buffer_object";
+    if (hle_gl_var_enabled() &&
+        has_word(all, all_size, kArbBuffers, sizeof(kArbBuffers) - 1)) {
+      cf_buf_appends(&out, "GL_APPLE_vertex_array_range GL_APPLE_fence ");
+    }
     free(image);
     extensions = out.data;
     cf_trace("GL_EXTENSIONS: %zu bytes of the driver's %zu, the extensions "
@@ -304,7 +311,8 @@ static void* lookup_gl(const char* name) {
   if (!strcmp(name, "glProgramStringARB")) {
     return __darwin_glProgramStringARB;
   }
-  return hle_gl_stats_wrap(name, dlsym(RTLD_DEFAULT, name));
+  return hle_gl_stats_wrap(name,
+                           hle_gl_var_wrap(name, dlsym(RTLD_DEFAULT, name)));
 }
 
 // ---------------------------------------------------------------------------
@@ -466,6 +474,10 @@ static void make_current(hle_gl_context* c) {
   if (window != SDL_GL_GetCurrentWindow() ||
       gl != SDL_GL_GetCurrentContext()) {
     context_switches++;
+  }
+  if (gl != SDL_GL_GetCurrentContext()) {
+    // Buffer bindings belong to a context.
+    hle_gl_var_context_changed();
   }
   SDL_GL_MakeCurrent(window, gl);
   current = c;

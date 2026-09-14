@@ -119,6 +119,9 @@ tests/fault_test: tests/fault_test.c hle/game_faults.c hle/game_faults.h
 tests/profile_test: tests/profile_test.c hle/profile.c hle/profile.h
 	$(CC) $(CFLAGS) -o $@ tests/profile_test.c hle/profile.c -ldl -lpthread
 
+tests/var_ranges_test: tests/var_ranges_test.c hle/var_ranges.c hle/var_ranges.h
+	$(CC) $(CFLAGS) -o $@ tests/var_ranges_test.c hle/var_ranges.c
+
 dist:
 	cd /tmp && rm -fr maloader-$(VERSION) && git clone git@github.com:shinh/maloader.git && rm -fr maloader/.git && mv maloader maloader-$(VERSION) && tar -cvzf maloader-$(VERSION).tar.gz maloader-$(VERSION)
 

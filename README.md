@@ -172,6 +172,16 @@ bundles and localized strings, preferences, UUIDs and character sets.
   reported on stderr with the driver's message.
   `make tests/arb_test && tests/arb_test GameData/Shaders/vsh/*.vsh` checks
   the rewrite, with the game's own programs when they are named.
+- Halo draws its vertex buffers the fast way only where OpenGL has
+  `GL_APPLE_vertex_array_range` and `GL_APPLE_fence`; elsewhere it hands the
+  driver client arrays, which NVIDIA's driver copies on the CPU for every
+  draw. Those two and `GL_APPLE_vertex_array_object` are emulated with ARB
+  buffer objects: a vertex array object keeps its own client arrays, what the
+  game flushes from a range goes to a buffer object for that span, and an
+  array pointer into a flushed span reads from its buffer object. On a
+  Pentium 4 the time demo runs 20 to 35% faster with them. `HLE_VAR=0` leaves
+  them out. `make tests/var_ranges_test && tests/var_ranges_test` checks the
+  ranges they keep.
 - Displays, their modes and the main GDevice describe SDL's display 0. A mode
   switch resizes the game's window, and a window covering a captured display
   goes full screen unless `HLE_WINDOWED` is set. Gamma tables are recorded,
