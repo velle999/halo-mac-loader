@@ -261,6 +261,10 @@ static const struct {
   { SDL_SCANCODE_F11, 0x67 }, { SDL_SCANCODE_F13, 0x69 },
   { SDL_SCANCODE_F14, 0x6B }, { SDL_SCANCODE_F10, 0x6D },
   { SDL_SCANCODE_F12, 0x6F }, { SDL_SCANCODE_F15, 0x71 },
+  // A Mac keyboard has F13, F14 and F15 where a PC's has Print Screen,
+  // Scroll Lock and Pause.
+  { SDL_SCANCODE_PRINTSCREEN, 0x69 }, { SDL_SCANCODE_SCROLLLOCK, 0x6B },
+  { SDL_SCANCODE_PAUSE, 0x71 },
   { SDL_SCANCODE_INSERT, 0x72 }, { SDL_SCANCODE_HOME, 0x73 },
   { SDL_SCANCODE_PAGEUP, 0x74 }, { SDL_SCANCODE_DELETE, 0x75 },
   { SDL_SCANCODE_F4, 0x76 }, { SDL_SCANCODE_END, 0x77 },
@@ -332,6 +336,10 @@ static void release_all_keys(void) {
 }
 
 static void post_key(const SDL_KeyboardEvent* e) {
+  if (e->type == SDL_KEYDOWN && !e->repeat &&
+      e->keysym.scancode == SDL_SCANCODE_PRINTSCREEN) {
+    hle_screenshot_request();
+  }
   int code = mac_key(e->keysym.scancode);
   if (code < 0) {
     return;

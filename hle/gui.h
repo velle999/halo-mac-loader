@@ -218,6 +218,11 @@ void hle_sdl_window_destroy(hle_window* window);
 // OpenGL (gl.c): moves the contexts drawing in |sdl_window| off it, before
 // the window is destroyed.
 void hle_gl_window_destroyed(void* sdl_window);
+
+// Screenshots (screenshot.c): Print Screen asks for one, and the next frame
+// swapped in |sdl_window| is saved.
+void hle_screenshot_request(void);
+void hle_screenshot_take(void* sdl_window);
 int hle_sdl_switch_mode(const hle_display_mode* mode);
 // Moves the pointer to a global position, in the game window's terms.
 void hle_sdl_warp_mouse(int x, int y);

@@ -893,6 +893,9 @@ void aglSwapBuffers(void* ctx) {
   if (traced) {
     dump_frame(c, swaps);
   }
+  if (c == current) {
+    hle_screenshot_take(c->window);
+  }
   double before = clock_seconds(CLOCK_MONOTONIC);
   SDL_GL_SwapWindow(c->window);
   double after = clock_seconds(CLOCK_MONOTONIC);
