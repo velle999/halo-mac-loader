@@ -117,6 +117,12 @@ void* hle_sdl_window_for(hle_window* window, int fullscreen, int width,
     }
     game_window = created;
   }
+  // The game attaches its window again after each pbuffer it draws in, a few
+  // times a frame. Only a window newly the game's, or hidden, is shown and
+  // raised, as a raise goes to the X server and the window manager.
+  int newly = game_carbon_window != window ||
+              !SDL_GetWindowData(game_window, "hle_shown") ||
+              !(SDL_GetWindowFlags(game_window) & SDL_WINDOW_SHOWN);
   game_carbon_window = window;
 
   if (fullscreen) {
@@ -141,13 +147,16 @@ void* hle_sdl_window_for(hle_window* window, int fullscreen, int width,
   game_content.bottom = game_content.top + height;
   game_content.right = game_content.left + width;
   game_fullscreen = fullscreen;
-  SDL_ShowWindow(game_window);
-  // On X11 raising a window gives it the focus, so a window asked to show
-  // without taking it, as test runs ask with
-  // SDL_WINDOW_NO_ACTIVATION_WHEN_SHOWN, is not raised.
-  if (!SDL_GetHintBoolean(SDL_HINT_WINDOW_NO_ACTIVATION_WHEN_SHOWN,
-                          SDL_FALSE)) {
-    SDL_RaiseWindow(game_window);
+  if (newly) {
+    SDL_SetWindowData(game_window, "hle_shown", game_window);
+    SDL_ShowWindow(game_window);
+    // On X11 raising a window gives it the focus, so a window asked to show
+    // without taking it, as test runs ask with
+    // SDL_WINDOW_NO_ACTIVATION_WHEN_SHOWN, is not raised.
+    if (!SDL_GetHintBoolean(SDL_HINT_WINDOW_NO_ACTIVATION_WHEN_SHOWN,
+                            SDL_FALSE)) {
+      SDL_RaiseWindow(game_window);
+    }
   }
   return game_window;
 }
@@ -162,6 +171,7 @@ void hle_sdl_window_destroy(hle_window* window) {
     game_carbon_window = NULL;
     game_fullscreen = 0;
   }
+  hle_gl_window_destroyed(window->sdl_window);
   SDL_DestroyWindow(window->sdl_window);
   window->sdl_window = NULL;
 }

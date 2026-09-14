@@ -91,9 +91,11 @@ executables at 0x400000, which is inside the game's image.
 - `HLE_FRAME_DUMP=<directory>` saves the first frame the game draws, and
   every 600th after it, to `frame-<n>.ppm` in that directory.
 - With `HLE_TRACE=1`, every 600th frame logs the frame rate over the last
-  600, the longest frame and how many took over 50 and 100 ms, and how a
-  frame's time divides: the game's thread on the CPU, all threads on the CPU
-  (the sound mixer's included), and waiting in the swap. `HLE_GL_STATS=1`
+  600, the longest frame and how many took over 50 and 100 ms, how a frame's
+  time divides (the game's thread on the CPU, all threads on the CPU with the
+  sound mixer's, and waiting in the swap), and how many times a GL context
+  was made current somewhere new, each a round trip to the X server.
+  `HLE_GL_STATS=1`
   adds the game's draw calls, vertices and indices, texture uploads and
   copies, `glFinish`, `glFlush` and `glReadPixels` calls, texture binds and
   ARB program parameters per frame.

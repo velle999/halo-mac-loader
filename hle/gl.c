@@ -115,6 +115,7 @@ typedef struct hle_gl_context {
   void* drawable;
   int fullscreen;
   struct hle_pbuffer* pbuffer;  // the pbuffer it draws in, or NULL
+  struct hle_gl_context* next;  // in contexts
 } hle_gl_context;
 
 typedef struct {
@@ -122,6 +123,10 @@ typedef struct {
   int count;
 } hle_renderer_info;
 
+// Every context, so that a window's destruction moves them off it; guarded
+// by lock.
+static hle_gl_context* contexts;
+static unsigned context_switches;  // real ones since the last frame trace
 static __thread hle_gl_context* current;
 static __thread int agl_error;
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
@@ -454,11 +459,15 @@ static hle_gl_context* context_of(void* ref) {
 }
 
 static void make_current(hle_gl_context* c) {
-  if (c) {
-    SDL_GL_MakeCurrent(c->window, c->gl);
-  } else {
-    SDL_GL_MakeCurrent(NULL, NULL);
+  SDL_Window* window = c ? c->window : NULL;
+  SDL_GLContext gl = c ? c->gl : NULL;
+  // SDL does nothing when both are current already; anything else is a
+  // glXMakeCurrent, a round trip to the X server.
+  if (window != SDL_GL_GetCurrentWindow() ||
+      gl != SDL_GL_GetCurrentContext()) {
+    context_switches++;
   }
+  SDL_GL_MakeCurrent(window, gl);
   current = c;
 }
 
@@ -517,6 +526,10 @@ static hle_gl_context* create_context(hle_pixel_format* f,
   c->gl = gl;
   c->window = f->probe;
   c->format = f;
+  pthread_mutex_lock(&lock);
+  c->next = contexts;
+  contexts = c;
+  pthread_mutex_unlock(&lock);
   return c;
 }
 
@@ -530,6 +543,14 @@ static void destroy_context(hle_gl_context* c) {
   if (current == c) {
     make_current(NULL);
   }
+  pthread_mutex_lock(&lock);
+  for (hle_gl_context** link = &contexts; *link; link = &(*link)->next) {
+    if (*link == c) {
+      *link = c->next;
+      break;
+    }
+  }
+  pthread_mutex_unlock(&lock);
   SDL_GL_DeleteContext(c->gl);
   c->magic = 0;
   free(c);
@@ -541,6 +562,19 @@ static void move_to(hle_gl_context* c, SDL_Window* window) {
   if (current == c) {
     make_current(c);
   }
+}
+
+void hle_gl_window_destroyed(void* sdl_window) {
+  // A context detached from its window still draws there (see
+  // aglSetDrawable) and moves to its hidden probe window now. The game draws
+  // on one thread, so only a context current on this one is rebound.
+  pthread_mutex_lock(&lock);
+  for (hle_gl_context* c = contexts; c; c = c->next) {
+    if (c->window == sdl_window) {
+      move_to(c, NULL);
+    }
+  }
+  pthread_mutex_unlock(&lock);
 }
 
 // ---------------------------------------------------------------------------
@@ -687,7 +721,11 @@ Boolean aglSetDrawable(void* ctx, void* drawable) {
   c->drawable = drawable;
   c->fullscreen = 0;
   if (!drawable) {
-    move_to(c, NULL);
+    // Detached, the context stays bound to the window it drew in. The game
+    // detaches its window after each pbuffer it draws in and attaches it
+    // again at once, and a move to the hidden probe window and back would be
+    // two glXMakeCurrent calls. Swaps do nothing until it is attached again,
+    // and a window destroyed first moves it (hle_gl_window_destroyed).
     return 1;
   }
   hle_port* port = drawable;
@@ -819,7 +857,7 @@ void aglSwapBuffers(void* ctx) {
   if (!c) {
     return;
   }
-  if (c->window == c->format->probe) {
+  if (c->window == c->format->probe || (!c->drawable && !c->fullscreen)) {
     cf_warn_once("aglSwapBuffers on a context with no drawable");
     return;
   }
@@ -874,18 +912,19 @@ void aglSwapBuffers(void* ctx) {
       cf_trace("aglSwapBuffers: frame %u, %.1f frames a second, the longest "
                "%u ms, %u over 50 ms and %u over 100; a frame takes %.1f ms, "
                "%.1f of them on this thread's CPU and %.1f on all threads', "
-               "%.1f in the swap%s",
+               "%.1f in the swap; %u context switches%s",
                swaps, frames * 1000.0 / (elapsed ? elapsed : 1), longest,
                over_50, over_100, (after - traced_wall) * ms,
                (thread_cpu - traced_thread_cpu) * ms,
                (process_cpu - traced_process_cpu) * ms, swapping * ms,
-               gl_counts);
+               context_switches, gl_counts);
     }
     traced_at = now;
     longest = 0;
     over_50 = 0;
     over_100 = 0;
     swapping = 0;
+    context_switches = 0;
     traced_wall = after;
     traced_thread_cpu = thread_cpu;
     traced_process_cpu = process_cpu;
