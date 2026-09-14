@@ -16,4 +16,8 @@ void hle_profile_start(void* game_code);
 // SDL's threads do. Cheap to call often.
 void hle_profile_thread(void);
 
+// Writes the profile now rather than at exit, for a crash, which skips the
+// exit. Writes nothing twice.
+void hle_profile_write(void);
+
 #endif  // HLE_PROFILE_H_

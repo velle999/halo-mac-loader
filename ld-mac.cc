@@ -1270,6 +1270,12 @@ static void reportClassicFault(int signum, siginfo_t* siginfo,
   if (report_game_mappings) {
     report_game_mappings(fault);
   }
+  // A profile being taken is written as it would be at exit.
+  void (*write_profile)(void) =
+      (void (*)(void))dlsym(RTLD_DEFAULT, "hle_profile_write");
+  if (write_profile) {
+    write_profile();
+  }
   _exit(128 + signum);
 }
 #endif
@@ -1508,6 +1514,14 @@ int main(int argc, char* argv[], char* envp[]) {
   // and the heap never shrinks.
   mallopt(M_MMAP_MAX, 0);
   mallopt(M_TRIM_THRESHOLD, -1);
+  // NVIDIA's driver copies client vertex arrays on the CPU, and the game
+  // draws past the ends of its vertex buffers: its Direct3D layer asks
+  // glDrawRangeElements for one vertex more than a buffer holds, and a crash
+  // in glDrawArrays read 57 KB past the heap's break. The Mac game pads the
+  // buffers it can, and the GPU read them there. The heap grows 64 MB at a
+  // time rather than 128 KB, so a buffer at its top rarely has that little
+  // mapped memory above it.
+  mallopt(M_TOP_PAD, 64 << 20);
 #endif
   g_timer.start();
   initSignalHandler();

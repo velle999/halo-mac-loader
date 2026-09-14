@@ -163,12 +163,27 @@ static void on_sample(int signum, siginfo_t* info, void* context) {
   errno = saved_errno;
 }
 
+static int written;
+static void write_profile(void);
+
+void hle_profile_write(void) {
+  if (slots) {
+    write_profile();
+  }
+}
+
 static void write_profile(void) {
+  if (written) {
+    return;
+  }
+  written = 1;
   struct itimerval off;
   memset(&off, 0, sizeof(off));
   setitimer(ITIMER_PROF, &off, NULL);
-  // Nothing is recorded after this.
-  while (__sync_lock_test_and_set(&table_busy, 1)) {
+  // Nothing is recorded after this. A crash in the sampler would leave the
+  // table taken, so the wait has a limit.
+  for (int tries = 0;
+       __sync_lock_test_and_set(&table_busy, 1) && tries < 1000; tries++) {
     sched_yield();
   }
   FILE* f = fopen(output, "w");

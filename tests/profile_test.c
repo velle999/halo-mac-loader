@@ -86,7 +86,10 @@ int main(void) {
     setenv("HLE_PROFILE", path, 1);
     hle_profile_start((void*)work);
     work();
-    exit(0);
+    // As the crash report does: the profile is written now, and the child
+    // leaves without running what exit would.
+    hle_profile_write();
+    _exit(0);
   }
   int status = 0;
   waitpid(child, &status, 0);
